@@ -58,6 +58,9 @@ async def get_client():
     if not await client.is_user_authorized():
         raise Exception("Telegram 未登录，请先运行 tg-reader 登录")
 
+    # Catch up to sync latest messages (fixes stale data issue)
+    await client.catch_up()
+
     return client
 
 
