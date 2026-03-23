@@ -161,7 +161,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False))]
 
 
-async def list_dialogs_impl(filter_keyword: str = None, limit: int = 50) -> dict:
+async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) -> dict:
     """列出对话"""
     client = await get_client()
 
@@ -176,17 +176,38 @@ async def list_dialogs_impl(filter_keyword: str = None, limit: int = 50) -> dict
             dtype = "频道" if dialog.is_channel else ("群组" if dialog.is_group else "私聊")
             username = getattr(dialog.entity, 'username', None)
 
-            # 过滤
+            # 过滤：支持组合，如 "unread_dm" = 未读+私聊
             if filter_keyword:
-                name_match = filter_keyword.lower() in dialog.name.lower()
-                username_match = username and filter_keyword.lower() in username.lower()
-                if not name_match and not username_match:
+                fk = filter_keyword.lower()
+                # 解析过滤条件
+                want_unread = "unread" in fk
+                want_dm = "dm" in fk or "私聊" in fk
+                want_channel = "channel" in fk or "频道" in fk
+                want_group = "group" in fk or "群组" in fk
+                has_type_filter = want_dm or want_channel or want_group
+
+                if want_unread and not dialog.unread_count:
                     continue
+                if has_type_filter:
+                    type_match = (
+                        (want_dm and dtype == "私聊") or
+                        (want_channel and dtype == "频道") or
+                        (want_group and dtype == "群组")
+                    )
+                    if not type_match:
+                        continue
+                if not want_unread and not has_type_filter:
+                    # 纯文本名称匹配
+                    name_match = fk in dialog.name.lower()
+                    username_match = username and fk in username.lower()
+                    if not name_match and not username_match:
+                        continue
 
             dialogs.append({
                 "type": dtype,
                 "name": dialog.name,
                 "username": username,
+                "unread_count": dialog.unread_count or 0,
             })
             count += 1
 
