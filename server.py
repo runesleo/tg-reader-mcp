@@ -13,6 +13,7 @@ import os
 import sys
 import json
 import asyncio
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,17 @@ SESSION_PATH = TG_READER_DIR / 'tg_session'
 server = Server("tg-reader-mcp")
 
 
+def _get_pid_session_path() -> str:
+    """为每个进程创建独立的 session 副本，避免多 MCP 进程共享 SQLite 竞争"""
+    src = SESSION_PATH.with_suffix('.session')
+    pid_session = TG_READER_DIR / f'tg_session_mcp_{os.getpid()}'
+    pid_file = pid_session.with_suffix('.session')
+    # 首次或源文件更新时重新复制
+    if not pid_file.exists() or src.stat().st_mtime > pid_file.stat().st_mtime:
+        shutil.copy2(str(src), str(pid_file))
+    return str(pid_session)
+
+
 async def get_client():
     """获取 Telegram 客户端"""
     if not API_ID or not API_HASH:
@@ -52,7 +64,8 @@ async def get_client():
     if not SESSION_PATH.with_suffix('.session').exists():
         raise Exception(f"Session 文件不存在: {SESSION_PATH}.session，请先运行 tg-reader 登录")
 
-    client = TelegramClient(str(SESSION_PATH), int(API_ID), API_HASH)
+    session_path = _get_pid_session_path()
+    client = TelegramClient(session_path, int(API_ID), API_HASH)
     await client.connect()
 
     if not await client.is_user_authorized():
