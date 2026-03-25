@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 TG Reader MCP Server
-Telegram 频道/群组消息读取 MCP 服务（只读）
+Telegram 频道/群组消息读取 MCP 服务（只读 + 标记已读）
 
 安全说明：
-- 仅提供只读功能，不能发送消息
+- 仅提供只读功能和标记已读，不能发送消息
 - Session 文件存储在本地，不会传输到外部
 - 所有数据处理在本地完成
 """
@@ -142,6 +142,20 @@ async def list_tools() -> list[Tool]:
                 "required": ["channel", "keyword"],
             },
         ),
+        Tool(
+            name="mark_read",
+            description="标记 Telegram 对话为已读",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "频道/群组/私聊用户名或完整名称",
+                    },
+                },
+                "required": ["channel"],
+            },
+        ),
     ]
 
 
@@ -164,6 +178,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 channel=arguments["channel"],
                 keyword=arguments["keyword"],
                 limit=arguments.get("limit", 20),
+            )
+        elif name == "mark_read":
+            result = await mark_read_impl(
+                channel=arguments["channel"],
             )
         else:
             result = {"error": f"Unknown tool: {name}"}
@@ -286,6 +304,24 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
             "messages": messages,
             "count": len(messages),
         }
+
+    finally:
+        await client.disconnect()
+
+
+async def mark_read_impl(channel: str) -> dict:
+    """标记对话为已读"""
+    client = await get_client()
+
+    try:
+        try:
+            entity = await client.get_entity(channel)
+            name = getattr(entity, 'title', None) or getattr(entity, 'first_name', channel)
+        except Exception as e:
+            return {"error": f"无法找到对话 {channel}: {e}"}
+
+        await client.send_read_acknowledge(entity)
+        return {"success": True, "channel": name, "message": f"已标记 {name} 为已读"}
 
     finally:
         await client.disconnect()
