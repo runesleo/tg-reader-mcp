@@ -8,7 +8,7 @@ TG Reader HTTP Server
   python http_server.py 8766   # 指定端口
 
 接口:
-  GET /channels/{name}/messages?limit=20
+  GET /channels/{name}/messages?limit=20&since=ISO&offset_date=ISO
   GET /channels/{name}/search?keyword=xxx&limit=20
   GET /dialogs?filter=xxx&limit=50
   GET /health
@@ -49,21 +49,49 @@ async def get_client():
     return client
 
 
-async def read_channel(channel: str, limit: int = 20) -> dict:
+async def read_channel(channel: str, limit: int = 20, since: str | None = None, offset_date: str | None = None) -> dict:
+    from datetime import datetime, timezone
     client = await get_client()
     try:
         entity = await client.get_entity(channel)
         title = getattr(entity, 'title', channel)
+
+        iter_kwargs: dict = {"limit": min(limit, 100)}
+        since_dt = None
+
+        if offset_date:
+            dt = datetime.fromisoformat(offset_date)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            iter_kwargs["offset_date"] = dt
+
+        if since:
+            since_dt = datetime.fromisoformat(since)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            if not offset_date:
+                iter_kwargs["limit"] = min(limit * 5, 500)
+
         messages = []
-        async for msg in client.iter_messages(entity, limit=min(limit, 100)):
-            if isinstance(msg, Message) and msg.text:
-                messages.append({
-                    "id": msg.id,
-                    "date": msg.date.isoformat(),
-                    "text": msg.text[:2000],
-                    "views": msg.views,
-                })
-        return {"channel": title, "messages": messages, "count": len(messages)}
+        async for msg in client.iter_messages(entity, **iter_kwargs):
+            if not (isinstance(msg, Message) and msg.text):
+                continue
+            if since_dt and msg.date < since_dt:
+                break
+            messages.append({
+                "id": msg.id,
+                "date": msg.date.isoformat(),
+                "text": msg.text[:2000],
+                "views": msg.views,
+            })
+            if since_dt and len(messages) >= limit:
+                break
+
+        has_more = len(messages) == limit
+        result: dict = {"channel": title, "messages": messages, "count": len(messages)}
+        if has_more and messages:
+            result["next_offset_date"] = messages[-1]["date"]
+        return result
     finally:
         await client.disconnect()
 
@@ -149,7 +177,9 @@ class TGHandler(BaseHTTPRequestHandler):
             elif len(parts) == 3 and parts[0] == 'channels' and parts[2] == 'messages':
                 channel = parts[1]
                 limit = int(qs.get('limit', [20])[0])
-                result = run_async(read_channel(channel, limit))
+                since = qs.get('since', [None])[0]
+                offset_date = qs.get('offset_date', [None])[0]
+                result = run_async(read_channel(channel, limit, since=since, offset_date=offset_date))
                 self.send_json(result)
 
             # GET /channels/{name}/search

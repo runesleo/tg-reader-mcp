@@ -14,7 +14,7 @@ import sys
 import json
 import asyncio
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +102,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="read_channel",
-            description="读取 Telegram 频道/群组的消息",
+            description="读取 Telegram 频道/群组的消息。支持 since 翻页：传入 ISO 时间戳只返回该时间之后的消息，传入 offset_date 从该时间点往前翻页",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -114,6 +114,14 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "获取消息数量（默认 20，最大 100）",
                         "default": 20,
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "ISO 时间戳，只返回此时间之后的消息（如 2026-04-13T00:00:00+08:00）",
+                    },
+                    "offset_date": {
+                        "type": "string",
+                        "description": "ISO 时间戳，从此时间点往前翻页（用上一批最后一条的 date 字段）",
                     },
                 },
                 "required": ["channel"],
@@ -171,7 +179,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "read_channel":
             result = await read_channel_impl(
                 channel=arguments["channel"],
-                limit=min(arguments.get("limit", 20), 100),  # 限制最大 100
+                limit=min(arguments.get("limit", 20), 100),
+                since=arguments.get("since"),
+                offset_date=arguments.get("offset_date"),
             )
         elif name == "search_channel":
             result = await search_channel_impl(
@@ -248,8 +258,13 @@ async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) 
         await client.disconnect()
 
 
-async def read_channel_impl(channel: str, limit: int = 20) -> dict:
-    """读取频道消息"""
+async def read_channel_impl(
+    channel: str,
+    limit: int = 20,
+    since: str | None = None,
+    offset_date: str | None = None,
+) -> dict:
+    """读取频道消息，支持 since 过滤和 offset_date 翻页"""
     client = await get_client()
 
     try:
@@ -260,22 +275,51 @@ async def read_channel_impl(channel: str, limit: int = 20) -> dict:
         except Exception as e:
             return {"error": f"无法找到频道 {channel}: {e}"}
 
+        # 解析时间参数
+        iter_kwargs: dict = {"limit": limit}
+        since_dt = None
+
+        if offset_date:
+            dt = datetime.fromisoformat(offset_date)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            iter_kwargs["offset_date"] = dt
+
+        if since:
+            since_dt = datetime.fromisoformat(since)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            # since 模式下放宽 limit，靠时间截断
+            if not offset_date:
+                iter_kwargs["limit"] = min(limit * 5, 500)
+
         # 获取消息
         messages = []
-        async for message in client.iter_messages(entity, limit=limit):
-            if isinstance(message, Message) and message.text:
-                messages.append({
-                    "id": message.id,
-                    "date": message.date.isoformat(),
-                    "text": message.text[:2000],  # 限制长度
-                    "views": message.views,
-                })
+        async for message in client.iter_messages(entity, **iter_kwargs):
+            if not (isinstance(message, Message) and message.text):
+                continue
+            # since 过滤：消息早于 since 就停止（iter_messages 按时间倒序）
+            if since_dt and message.date < since_dt:
+                break
+            messages.append({
+                "id": message.id,
+                "date": message.date.isoformat(),
+                "text": message.text[:2000],
+                "views": message.views,
+            })
+            if since_dt and len(messages) >= limit:
+                break
 
-        return {
+        has_more = len(messages) == limit
+        result: dict = {
             "channel": title,
             "messages": messages,
             "count": len(messages),
         }
+        if has_more and messages:
+            result["next_offset_date"] = messages[-1]["date"]
+
+        return result
 
     finally:
         await client.disconnect()
