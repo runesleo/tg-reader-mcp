@@ -1,12 +1,33 @@
 [project]
 name = "tg-reader-mcp"
-version = "1.0.0"
-description = "Telegram Reader MCP Server (只读)"
+version = "0.1.0"
+description = "Read-only Telegram MCP server. Let your AI agent read channels, groups, and DMs without sending anything."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Leo", email = "runes.leo@gmail.com" },
+]
+keywords = ["mcp", "telegram", "telethon", "claude", "ai-agent", "readonly"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+]
 dependencies = [
     "mcp>=1.0.0",
     "telethon>=1.34.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/runesleo/tg-reader-mcp"
+Repository = "https://github.com/runesleo/tg-reader-mcp"
+Issues = "https://github.com/runesleo/tg-reader-mcp/issues"
+Author = "https://x.com/runes_leo"
 
 [project.scripts]
 tg-reader-mcp = "server:main"

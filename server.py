@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 """
 TG Reader MCP Server
-Telegram 频道/群组消息读取 MCP 服务（只读 + 标记已读）
 
-安全说明：
-- 仅提供只读功能和标记已读，不能发送消息
-- Session 文件存储在本地，不会传输到外部
-- 所有数据处理在本地完成
+Read-only Telegram MCP server. Exposes four tools (list_dialogs, read_channel,
+search_channel, mark_read) to any MCP client. No send, edit, or delete tools
+are registered.
+
+Security notes:
+- All network I/O goes to Telegram's official API via Telethon.
+- The .session file stays local. Nothing is transmitted elsewhere.
+- Each process gets its own temporary session copy to avoid SQLite contention
+  between concurrent MCP clients.
 """
 
 import os
 import sys
 import json
+import stat
+import uuid
+import atexit
 import asyncio
 import shutil
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,72 +37,166 @@ try:
     from telethon import TelegramClient
     from telethon.tl.types import Message
 except ImportError:
-    print("请先安装 telethon: pip install telethon", file=sys.stderr)
+    print("Install telethon first: pip install telethon", file=sys.stderr)
     sys.exit(1)
 
-# ============ 配置 ============
-# 使用 Telegram Desktop 公开凭证（不是用户私有信息）
+# ============ Config ============
+# Defaults are Telegram Desktop's public API credentials — safe to use.
+# Override with TG_API_ID / TG_API_HASH for your own (see https://my.telegram.org).
 API_ID = os.getenv('TG_API_ID', '94575')
 API_HASH = os.getenv('TG_API_HASH', 'a3406de8d171bb422bb6ddf3bbd800e2')
 
-# Session 文件路径（用户的登录凭证）
-TG_READER_DIR = Path(__file__).parent.parent / 'tg-reader'
-SESSION_PATH = TG_READER_DIR / 'tg_session'
+# Session file path (user's login credential).
+# Preferred: set TG_SESSION_PATH env var to the absolute path of your .session file.
+# Fallback: sibling ../tg-reader/ directory (for backward compatibility).
+_env_session = os.getenv('TG_SESSION_PATH')
+if _env_session:
+    _raw = Path(_env_session).expanduser()
+    # Refuse symlinks to avoid loading a session outside a trusted directory.
+    if _raw.is_symlink():
+        raise RuntimeError(
+            f"TG_SESSION_PATH must not be a symlink: {_raw}. "
+            "Point it at the real .session file."
+        )
+    SESSION_PATH = _raw.resolve()
+    if SESSION_PATH.suffix == '.session':
+        SESSION_PATH = SESSION_PATH.with_suffix('')
+    TG_READER_DIR = SESSION_PATH.parent
+
+    # Best-effort permission check on the session file itself.
+    _session_file = SESSION_PATH.with_suffix('.session')
+    if _session_file.exists():
+        try:
+            _st = _session_file.stat()
+            if _st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                print(
+                    f"[tg-reader-mcp] Warning: {_session_file} is readable by group/others. "
+                    "Recommend `chmod 600`.",
+                    file=sys.stderr,
+                )
+            if hasattr(os, 'geteuid') and _st.st_uid != os.geteuid():
+                print(
+                    f"[tg-reader-mcp] Warning: {_session_file} not owned by current user.",
+                    file=sys.stderr,
+                )
+        except OSError:
+            pass
+else:
+    TG_READER_DIR = Path(__file__).parent.parent / 'tg-reader'
+    SESSION_PATH = TG_READER_DIR / 'tg_session'
 # ==============================
 
-# 创建 MCP Server
+# Track the per-process session copy for atexit cleanup.
+# Lock guards first-access race and prevents atexit double-registration.
+_PID_SESSION_COPY: Path | None = None
+_PID_LOCK = threading.Lock()
+_ATEXIT_REGISTERED = False
+
+# Initialize the MCP server.
 server = Server("tg-reader-mcp")
 
 
 def _get_pid_session_path() -> str:
-    """为每个进程创建独立的 session 副本，避免多 MCP 进程共享 SQLite 竞争"""
-    src = SESSION_PATH.with_suffix('.session')
-    pid_session = TG_READER_DIR / f'tg_session_mcp_{os.getpid()}'
-    pid_file = pid_session.with_suffix('.session')
-    # 首次或源文件更新时重新复制
-    if not pid_file.exists() or src.stat().st_mtime > pid_file.stat().st_mtime:
-        shutil.copy2(str(src), str(pid_file))
-    return str(pid_session)
+    """Create a per-process session copy to avoid SQLite contention across MCP clients.
+
+    Uses a UUID suffix (not just PID) to prevent PID-reuse collisions, and writes
+    atomically via tempfile+rename. Copy is cleaned up on normal interpreter exit.
+    Guarded by a lock so concurrent first-access calls don't create two copies.
+    """
+    global _PID_SESSION_COPY, _ATEXIT_REGISTERED
+    with _PID_LOCK:
+        # Reuse the same copy across multiple get_client calls within this process.
+        if _PID_SESSION_COPY is not None and _PID_SESSION_COPY.exists():
+            return str(_PID_SESSION_COPY.with_suffix(''))
+
+        src = SESSION_PATH.with_suffix('.session')
+        unique_stem = f'tg_session_mcp_{os.getpid()}_{uuid.uuid4().hex[:8]}'
+        target = TG_READER_DIR / f'{unique_stem}.session'
+
+        # Atomic copy: write to temp, then rename into place.
+        fd, tmp_path = tempfile.mkstemp(
+            prefix='.tg_session_', suffix='.tmp', dir=str(TG_READER_DIR)
+        )
+        os.close(fd)
+        try:
+            shutil.copy2(str(src), tmp_path)
+            os.replace(tmp_path, str(target))
+        except Exception:
+            # Clean up temp file on any failure during copy/rename.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+        _PID_SESSION_COPY = target
+        if not _ATEXIT_REGISTERED:
+            atexit.register(_cleanup_pid_session)
+            _ATEXIT_REGISTERED = True
+        return str(target.with_suffix(''))
+
+
+def _cleanup_pid_session() -> None:
+    """Remove the per-process session copy on interpreter exit."""
+    if _PID_SESSION_COPY is None:
+        return
+    for suffix in ('.session', '.session-journal'):
+        p = _PID_SESSION_COPY.with_suffix(suffix)
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
 
 
 async def get_client():
-    """获取 Telegram 客户端"""
+    """Return a connected Telethon client for this process."""
     if not API_ID or not API_HASH:
-        raise Exception("TG_API_ID 和 TG_API_HASH 未设置")
+        raise Exception("TG_API_ID and TG_API_HASH are not set")
 
     if not SESSION_PATH.with_suffix('.session').exists():
-        raise Exception(f"Session 文件不存在: {SESSION_PATH}.session，请先运行 tg-reader 登录")
+        raise Exception(
+            f"Session file not found: {SESSION_PATH}.session. "
+            "Log in once with Telethon to create it (see README)."
+        )
 
     session_path = _get_pid_session_path()
     client = TelegramClient(session_path, int(API_ID), API_HASH)
-    await client.connect()
 
-    if not await client.is_user_authorized():
-        raise Exception("Telegram 未登录，请先运行 tg-reader 登录")
-
-    # Catch up to sync latest messages (fixes stale data issue)
-    await client.catch_up()
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise Exception("Telegram session is not authorized. Re-run the Telethon login.")
+        # Catch up to sync latest messages (fixes stale data issue).
+        await client.catch_up()
+    except Exception:
+        # Release connection resources on any setup failure.
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        raise
 
     return client
 
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    """列出可用工具"""
+    """Return the list of available MCP tools."""
     return [
         Tool(
             name="list_dialogs",
-            description="列出所有 Telegram 对话（频道、群组、私聊）",
+            description="List all Telegram dialogs (channels, groups, DMs). Supports combined filters like `unread_dm` (unread private chats only), `unread_channel`, `unread_group`, or any free-text keyword.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "filter": {
                         "type": "string",
-                        "description": "可选过滤关键词",
+                        "description": "Optional filter. Combine tokens: unread / dm / channel / group (e.g. `unread_dm`). Any other string is matched against dialog name and username.",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "返回数量限制（默认 50）",
+                        "description": "Max number of dialogs to return (default 50).",
                         "default": 50,
                     },
                 },
@@ -102,26 +205,26 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="read_channel",
-            description="读取 Telegram 频道/群组的消息。支持 since 翻页：传入 ISO 时间戳只返回该时间之后的消息，传入 offset_date 从该时间点往前翻页",
+            description="Read recent messages from a Telegram channel or group. Use `since` (ISO timestamp) to return only messages after that time, or `offset_date` (ISO timestamp) to paginate backwards.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "channel": {
                         "type": "string",
-                        "description": "频道/群组用户名（如 PolyBeats_Bot）或完整名称",
+                        "description": "Channel or group username (e.g. `durov`) or full title.",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "获取消息数量（默认 20，最大 100）",
+                        "description": "Max messages to return (default 20, cap 100).",
                         "default": 20,
                     },
                     "since": {
                         "type": "string",
-                        "description": "ISO 时间戳，只返回此时间之后的消息（如 2026-04-13T00:00:00+08:00）",
+                        "description": "ISO timestamp. Only messages strictly after this time are returned (e.g. `2026-04-13T00:00:00+08:00`).",
                     },
                     "offset_date": {
                         "type": "string",
-                        "description": "ISO 时间戳，从此时间点往前翻页（用上一批最后一条的 date 字段）",
+                        "description": "ISO timestamp. Paginate backwards from this time (feed in the `date` of the last message from a previous page).",
                     },
                 },
                 "required": ["channel"],
@@ -129,21 +232,21 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_channel",
-            description="在 Telegram 频道/群组中搜索关键词",
+            description="Keyword search inside a single Telegram channel or group.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "channel": {
                         "type": "string",
-                        "description": "频道/群组用户名",
+                        "description": "Channel or group username.",
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "搜索关键词",
+                        "description": "Keyword to search for.",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "返回数量限制（默认 20）",
+                        "description": "Max matching messages to return (default 20).",
                         "default": 20,
                     },
                 },
@@ -152,13 +255,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="mark_read",
-            description="标记 Telegram 对话为已读",
+            description="Mark a Telegram dialog (channel, group, or DM) as read.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "channel": {
                         "type": "string",
-                        "description": "频道/群组/私聊用户名或完整名称",
+                        "description": "Channel, group, or DM username or full title.",
                     },
                 },
                 "required": ["channel"],
@@ -169,7 +272,7 @@ async def list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """处理工具调用"""
+    """Dispatch an MCP tool call to its implementation."""
     try:
         if name == "list_dialogs":
             result = await list_dialogs_impl(
@@ -203,7 +306,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 
 async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) -> dict:
-    """列出对话"""
+    """List dialogs, optionally filtered by type / unread / keyword."""
     client = await get_client()
 
     try:
@@ -214,31 +317,35 @@ async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) 
             if count >= limit:
                 break
 
-            dtype = "频道" if dialog.is_channel else ("群组" if dialog.is_group else "私聊")
+            if dialog.is_channel:
+                dtype = "channel"
+            elif dialog.is_group:
+                dtype = "group"
+            else:
+                dtype = "dm"
             username = getattr(dialog.entity, 'username', None)
 
-            # 过滤：支持组合，如 "unread_dm" = 未读+私聊
+            # Filter: supports combinations like "unread_dm" = unread + direct messages.
             if filter_keyword:
                 fk = filter_keyword.lower()
-                # 解析过滤条件
                 want_unread = "unread" in fk
-                want_dm = "dm" in fk or "私聊" in fk
-                want_channel = "channel" in fk or "频道" in fk
-                want_group = "group" in fk or "群组" in fk
+                want_dm = "dm" in fk
+                want_channel = "channel" in fk
+                want_group = "group" in fk
                 has_type_filter = want_dm or want_channel or want_group
 
                 if want_unread and not dialog.unread_count:
                     continue
                 if has_type_filter:
                     type_match = (
-                        (want_dm and dtype == "私聊") or
-                        (want_channel and dtype == "频道") or
-                        (want_group and dtype == "群组")
+                        (want_dm and dtype == "dm") or
+                        (want_channel and dtype == "channel") or
+                        (want_group and dtype == "group")
                     )
                     if not type_match:
                         continue
                 if not want_unread and not has_type_filter:
-                    # 纯文本名称匹配
+                    # Plain name/username substring match.
                     name_match = fk in dialog.name.lower()
                     username_match = username and fk in username.lower()
                     if not name_match and not username_match:
@@ -264,18 +371,18 @@ async def read_channel_impl(
     since: str | None = None,
     offset_date: str | None = None,
 ) -> dict:
-    """读取频道消息，支持 since 过滤和 offset_date 翻页"""
+    """Read messages from a channel/group, with optional since/offset_date paging."""
     client = await get_client()
 
     try:
-        # 获取频道实体
+        # Resolve the channel/group entity.
         try:
             entity = await client.get_entity(channel)
             title = getattr(entity, 'title', channel)
         except Exception as e:
-            return {"error": f"无法找到频道 {channel}: {e}"}
+            return {"error": f"Unable to resolve channel {channel}: {e}"}
 
-        # 解析时间参数
+        # Parse time-window parameters.
         iter_kwargs: dict = {"limit": limit}
         since_dt = None
 
@@ -289,16 +396,17 @@ async def read_channel_impl(
             since_dt = datetime.fromisoformat(since)
             if since_dt.tzinfo is None:
                 since_dt = since_dt.replace(tzinfo=timezone.utc)
-            # since 模式下放宽 limit，靠时间截断
+            # Under `since` mode, loosen the fetch cap and rely on time cutoff.
             if not offset_date:
                 iter_kwargs["limit"] = min(limit * 5, 500)
 
-        # 获取消息
+        # Iterate and collect messages.
         messages = []
         async for message in client.iter_messages(entity, **iter_kwargs):
             if not (isinstance(message, Message) and message.text):
                 continue
-            # since 过滤：消息早于 since 就停止（iter_messages 按时间倒序）
+            # iter_messages is reverse-chronological, so a message older than
+            # `since` means we've passed the window and can stop early.
             if since_dt and message.date < since_dt:
                 break
             messages.append({
@@ -326,7 +434,7 @@ async def read_channel_impl(
 
 
 async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> dict:
-    """搜索频道消息"""
+    """Keyword-search messages inside a single channel/group."""
     client = await get_client()
 
     try:
@@ -354,7 +462,7 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
 
 
 async def mark_read_impl(channel: str) -> dict:
-    """标记对话为已读"""
+    """Mark a dialog (channel/group/DM) as read."""
     client = await get_client()
 
     try:
@@ -362,17 +470,17 @@ async def mark_read_impl(channel: str) -> dict:
             entity = await client.get_entity(channel)
             name = getattr(entity, 'title', None) or getattr(entity, 'first_name', channel)
         except Exception as e:
-            return {"error": f"无法找到对话 {channel}: {e}"}
+            return {"error": f"Unable to resolve dialog {channel}: {e}"}
 
         await client.send_read_acknowledge(entity)
-        return {"success": True, "channel": name, "message": f"已标记 {name} 为已读"}
+        return {"success": True, "channel": name, "message": f"Marked {name} as read"}
 
     finally:
         await client.disconnect()
 
 
 async def main():
-    """启动 MCP Server"""
+    """Run the MCP server over stdio."""
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
