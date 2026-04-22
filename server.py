@@ -53,11 +53,10 @@ API_HASH = os.getenv('TG_API_HASH', 'a3406de8d171bb422bb6ddf3bbd800e2')
 _env_session = os.getenv('TG_SESSION_PATH')
 if _env_session:
     _raw = Path(_env_session).expanduser()
-    # Refuse symlinks to avoid loading a session outside a trusted directory.
+    # Refuse symlinks on the env-var path itself.
     if _raw.is_symlink():
         raise RuntimeError(
-            f"TG_SESSION_PATH must not be a symlink: {_raw}. "
-            "Point it at the real .session file."
+            "TG_SESSION_PATH must not be a symlink. Point it at the real .session file."
         )
     SESSION_PATH = _raw.resolve()
     if SESSION_PATH.suffix == '.session':
@@ -66,6 +65,12 @@ if _env_session:
 
     # Best-effort permission check on the session file itself.
     _session_file = SESSION_PATH.with_suffix('.session')
+    # Also refuse symlinks at the actual .session file (TG_SESSION_PATH=/dir/tg_session
+    # with a symlinked /dir/tg_session.session would otherwise slip through).
+    if _session_file.exists() and _session_file.is_symlink():
+        raise RuntimeError(
+            "The .session file must not be a symlink. Point TG_SESSION_PATH at the real file."
+        )
     if _session_file.exists():
         try:
             _st = _session_file.stat()
@@ -155,10 +160,12 @@ async def get_client():
     if not API_ID or not API_HASH:
         raise Exception("TG_API_ID and TG_API_HASH are not set")
 
-    if not SESSION_PATH.with_suffix('.session').exists():
+    _session_file = SESSION_PATH.with_suffix('.session')
+    if not _session_file.exists():
+        # Log the full path to stderr for the operator; return a generic message to the MCP client.
+        print(f"[tg-reader-mcp] Session file missing: {_session_file}", file=sys.stderr)
         raise Exception(
-            f"Session file not found: {SESSION_PATH}.session. "
-            "Log in once with Telethon to create it (see README)."
+            "Session file not found. Check TG_SESSION_PATH and log in once with Telethon (see README)."
         )
 
     session_path = _get_pid_session_path()
@@ -284,7 +291,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_contacts_matching",
-            description="Scan DM dialogs and return full contact details (same shape as get_contact) for users whose first_name contains `pattern` (case-insensitive, also matches the user's note field). Use to bulk-query structured CRM tags like `VIP` (paid readers) encoded anywhere inside the contact display name. Network cost is O(N) FullUser calls — keep limit small.",
+            description="Scan DM dialogs and return full contact details (same shape as get_contact) for users whose first_name or last_name contains `pattern` (case-insensitive). With match_note=true also matches the user's note field at the cost of one FullUser call per scanned dialog. Use to bulk-query structured tags like `VIP` or `BSC` encoded anywhere inside the contact display name. Network cost is O(N) FullUser calls when match_note=true — keep limit small.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -596,7 +603,10 @@ async def list_contacts_matching_impl(
     limit: int = 30,
     dialog_scan_limit: int = 500,
 ) -> dict:
-    """Scan DM dialogs and return full contact details for users whose first_name (and optionally note) contains `pattern`."""
+    """Scan DM dialogs and return full contact details for users whose first_name / last_name (and optionally note) contains `pattern`."""
+    pattern = (pattern or "").strip()
+    if not pattern:
+        raise ValueError("pattern must be a non-empty string")
     client = await get_client()
     try:
         pat_lower = pattern.lower()
@@ -606,9 +616,10 @@ async def list_contacts_matching_impl(
         async for dialog in client.iter_dialogs():
             if scanned >= dialog_scan_limit or len(contacts) >= limit:
                 break
-            scanned += 1
+            # Only DMs count toward the scan budget; channels and groups are skipped for free.
             if dialog.is_channel or dialog.is_group:
                 continue
+            scanned += 1
             entity = dialog.entity
             first = getattr(entity, 'first_name', '') or ''
             last = getattr(entity, 'last_name', '') or ''
@@ -643,5 +654,10 @@ async def main():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Synchronous entry point for the `tg-reader-mcp` console script."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

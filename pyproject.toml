@@ -1,6 +1,6 @@
 [project]
 name = "tg-reader-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Read-only Telegram MCP server. Let your AI agent read channels, groups, and DMs without sending anything."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,8 +30,14 @@ Issues = "https://github.com/runesleo/tg-reader-mcp/issues"
 Author = "https://x.com/runes_leo"
 
 [project.scripts]
-tg-reader-mcp = "server:main"
+tg-reader-mcp = "server:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["server.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["server.py", "README.md", "README.zh.md", "CHANGELOG.md", "LICENSE"]

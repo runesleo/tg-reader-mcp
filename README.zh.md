@@ -1,6 +1,6 @@
 # tg-reader-mcp
 
-一个**只读**的 Telegram MCP Server。给你的 AI agent 看 TG 的能力，但拿不到"发消息"这把刀。
+一个**只读**的 Telegram MCP Server。让 AI agent 能读频道、群、私聊、联系人卡片，顶多清一下自己的未读状态（`mark_read`）。不能发、不能改、不能删。
 
 [English](./README.md)
 
@@ -17,7 +17,7 @@
 - **`search_channel`** — 在单个频道里搜关键词。
 - **`mark_read`** — 标记对话为已读。AI 消化完一批新消息后清掉"未读"状态，下次轮询不会再重复拉。
 - **`get_contact`** — 读一个联系人的卡片：first_name / last_name / username / phone / bio / **note** / is_contact / common_groups_count / last_seen。其中 `note` 是你在 TG 客户端手打的那条私人备注，走 MTProto 存在服务器上——agent 拿到就是结构化的 CRM 字段，不用你另建一张表。
-- **`list_contacts_matching`** — 批量扫 DM，把 first_name（可选连 note）里含某子串的联系人一次性捞出来。如果你习惯把标签直接写进联系人名字或备注（比如付费读者标 `VIP`、某期群标 `BSC`），这个工具就是干这件事的。返回结构跟 `get_contact` 完全一致。
+- **`list_contacts_matching`** — 批量扫 DM，把 first_name / last_name（可选连 note）里含某子串的联系人一次性捞出来。如果你习惯把标签直接写进联系人名字或备注（比如私标 `VIP`、某期群标 `BSC`），这个工具就是干这件事的。空 pattern 会被拒绝。返回结构跟 `get_contact` 完全一致。
 
 ## 工作流长什么样
 

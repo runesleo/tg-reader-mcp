@@ -1,6 +1,6 @@
 # tg-reader-mcp
 
-A **read-only** Telegram MCP server. Let your AI agent read channels, groups, and DMs — and do nothing else.
+A **read-only** Telegram MCP server. Let your AI agent read channels, groups, DMs, and contact cards — nothing else except clearing unread state (`mark_read`). No send. No edit. No delete.
 
 [中文版](./README.zh.md)
 
@@ -17,7 +17,7 @@ This server removes the blast radius. The tools are: `list_dialogs`, `read_chann
 - **`search_channel`** — keyword search inside one channel.
 - **`mark_read`** — mark a conversation as read. Useful when the agent has digested the new messages and should stop re-surfacing them.
 - **`get_contact`** — read one user's contact card: first_name, last_name, username, phone, bio, **note**, is_contact, common_groups_count, last_seen. The `note` field is the user-private contact note you type in the TG client — server-persisted via MTProto, so agents can treat it as structured CRM data.
-- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `VIP` for paid readers, `BSC` for a cohort). Returns the same shape as `get_contact`.
+- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name, last_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `VIP` for private labels, `BSC` for a cohort). Empty patterns are rejected. Returns the same shape as `get_contact`.
 
 ## How it works
 

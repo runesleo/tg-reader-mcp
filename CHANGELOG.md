@@ -2,12 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-04-22
+
+### Fixed
+- **Packaging**: `pip install -e .` / `uv pip install -e .` now succeed. Hatchling wheel config was missing an explicit `only-include`, which blocked the editable install from generating metadata.
+- **Console script**: `tg-reader-mcp` entry point now points at a synchronous `cli()` wrapper that calls `asyncio.run(main())`. Previous `server:main` returned a coroutine that was never awaited, so the installed script did nothing.
+
+### Security
+- `list_contacts_matching` now rejects empty / whitespace-only `pattern` (previously an empty pattern matched every DM contact — an unintentional full-contact-list export path for a misused agent).
+- `get_client()` no longer embeds the absolute session-file path in the exception message returned to the MCP client. The full path is logged to stderr for the operator only.
+- Symlink check now also refuses a symlinked `<stem>.session` file when `TG_SESSION_PATH` is set without the `.session` suffix.
+
+### Changed
+- `list_contacts_matching` documentation and tool schema now state that matching covers `first_name` / `last_name` (code behavior unchanged).
+- `dialog_scan_limit` now counts only DM dialogs against the scan budget. Channels and groups are skipped before the counter increments, matching the documented intent.
+- README tagline clarified: read-only content plus optional `mark_read`; still no send / edit / delete.
+
 ## [0.2.0] - 2026-04-22
 
 ### Added
 - `get_contact` tool: read one user's first_name, last_name, username, phone, bio, **note** (the user-private contact note from TG client), is_contact, is_mutual_contact, common_groups_count, last_seen.
-- `list_contacts_matching` tool: bulk-scan DM dialogs for users whose first_name contains a substring (e.g. `VIP` to enumerate paid-reader contacts). Optional `match_note=true` also searches note bodies at the cost of one FullUser call per scanned dialog.
-- Both tools surface `UserFull.note.text` from MTProto, which is server-persisted (not client-local), making contact notes usable as structured CRM data — useful for encoding paid-reader tags, cohort labels, payment TX hashes directly in TG contacts without an external CRM.
+- `list_contacts_matching` tool: bulk-scan DM dialogs for users whose first_name contains a substring (e.g. `VIP` to tag a private cohort). Optional `match_note=true` also searches note bodies at the cost of one FullUser call per scanned dialog.
+- Both tools surface `UserFull.note.text` from MTProto, which is server-persisted (not client-local), making contact notes usable as structured metadata — useful for private labels and cohort tags stored directly inside TG contacts instead of a separate database.
 
 ## [0.1.0] - 2026-04-17
 
