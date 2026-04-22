@@ -284,13 +284,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_contacts_matching",
-            description="Scan DM dialogs and return full contact details (same shape as get_contact) for users whose first_name contains `pattern` (case-insensitive, also matches the user's note field). Use to bulk-query structured CRM tags like `PMQ` (paid readers) encoded anywhere inside the contact display name. Network cost is O(N) FullUser calls — keep limit small.",
+            description="Scan DM dialogs and return full contact details (same shape as get_contact) for users whose first_name contains `pattern` (case-insensitive, also matches the user's note field). Use to bulk-query structured CRM tags like `VIP` (paid readers) encoded anywhere inside the contact display name. Network cost is O(N) FullUser calls — keep limit small.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
-                        "description": "Substring to match against first_name (case-insensitive). Example: `PMQ`, `Chris`, `BSC`.",
+                        "description": "Substring to match against first_name (case-insensitive). Example: `VIP`, `BSC`, `alpha`.",
                     },
                     "match_note": {
                         "type": "boolean",

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-    { name = "Leo", email = "runes.leo@gmail.com" },
+    { name = "Leo", email = "hello@leolabs.me" },
 ]
 keywords = ["mcp", "telegram", "telethon", "claude", "ai-agent", "readonly"]
 classifiers = [

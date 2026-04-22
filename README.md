@@ -17,7 +17,7 @@ This server removes the blast radius. The tools are: `list_dialogs`, `read_chann
 - **`search_channel`** — keyword search inside one channel.
 - **`mark_read`** — mark a conversation as read. Useful when the agent has digested the new messages and should stop re-surfacing them.
 - **`get_contact`** — read one user's contact card: first_name, last_name, username, phone, bio, **note**, is_contact, common_groups_count, last_seen. The `note` field is the user-private contact note you type in the TG client — server-persisted via MTProto, so agents can treat it as structured CRM data.
-- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `PMQ` for paid readers, `BSC` for a cohort). Returns the same shape as `get_contact`.
+- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `VIP` for paid readers, `BSC` for a cohort). Returns the same shape as `get_contact`.
 
 ## How it works
 
