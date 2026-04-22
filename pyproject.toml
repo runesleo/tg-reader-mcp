@@ -1,6 +1,6 @@
 [project]
 name = "tg-reader-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read-only Telegram MCP server. Let your AI agent read channels, groups, and DMs without sending anything."
 readme = "README.md"
 requires-python = ">=3.10"

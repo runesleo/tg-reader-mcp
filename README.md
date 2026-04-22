@@ -8,7 +8,7 @@ A **read-only** Telegram MCP server. Let your AI agent read channels, groups, an
 
 Most Telegram bots can send, edit, delete, join, leave. That's fine for bots — it's dangerous for an AI agent with your own user session. A slip in a prompt, a hallucinated tool call, a mis-quoted channel ID, and suddenly your agent is posting in someone else's group.
 
-This server removes the blast radius. The tools are: `list_dialogs`, `read_channel`, `search_channel`, `mark_read`. No send. No edit. No delete.
+This server removes the blast radius. The tools are: `list_dialogs`, `read_channel`, `search_channel`, `mark_read`, `get_contact`, `list_contacts_matching`. No send. No edit. No delete.
 
 ## What you get
 
@@ -16,6 +16,8 @@ This server removes the blast radius. The tools are: `list_dialogs`, `read_chann
 - **`read_channel`** — read recent messages from any channel or group. Paginate with `since` (ISO timestamp, forward) or `offset_date` (ISO timestamp, backward).
 - **`search_channel`** — keyword search inside one channel.
 - **`mark_read`** — mark a conversation as read. Useful when the agent has digested the new messages and should stop re-surfacing them.
+- **`get_contact`** — read one user's contact card: first_name, last_name, username, phone, bio, **note**, is_contact, common_groups_count, last_seen. The `note` field is the user-private contact note you type in the TG client — server-persisted via MTProto, so agents can treat it as structured CRM data.
+- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `PMQ` for paid readers, `BSC` for a cohort). Returns the same shape as `get_contact`.
 
 ## How it works
 
@@ -115,11 +117,12 @@ Telegram ToS: [telegram.org/tos](https://telegram.org/tos) · API ToS: [core.tel
 
 Follow [@runesgangalpha](https://t.me/runesgangalpha) — my public channel where I use this exact MCP to read and digest Polymarket, AI, and crypto signals. It's a live demo of the workflow.
 
-## Known limitations (0.1.0)
+## Known limitations (0.2.0)
 
 - **No media download yet** — text only. Photos, videos, voice messages return empty text.
 - **No reaction/view analytics beyond `views` count** — forwards, reactions not exposed.
 - **Hard pagination limit at 500** when using `since` mode — enough for most use cases, but heavy backfills need multiple `offset_date` calls.
+- **`list_contacts_matching` is O(N) on DM count** when `match_note=true` — each scanned dialog triggers one `GetFullUser` MTProto call. Keep `limit` small and cap `dialog_scan_limit` (default 500) if you have thousands of DMs.
 
 ## Roadmap
 
