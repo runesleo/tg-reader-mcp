@@ -36,6 +36,7 @@ from mcp.types import Tool, TextContent
 try:
     from telethon import TelegramClient
     from telethon.tl.types import Message
+    from telethon.tl.functions.users import GetFullUserRequest
 except ImportError:
     print("Install telethon first: pip install telethon", file=sys.stderr)
     sys.exit(1)
@@ -267,6 +268,49 @@ async def list_tools() -> list[Tool]:
                 "required": ["channel"],
             },
         ),
+        Tool(
+            name="get_contact",
+            description="Read one user's contact-level details: first_name, last_name, username, phone, bio, note (the user-private contact note set in TG client), is_contact, common_groups_count, last_seen. Works for any resolvable user; contact-only fields (phone, note) require is_contact=true.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "description": "Username (without @) or user id.",
+                    },
+                },
+                "required": ["username"],
+            },
+        ),
+        Tool(
+            name="list_contacts_matching",
+            description="Scan DM dialogs and return full contact details (same shape as get_contact) for users whose first_name contains `pattern` (case-insensitive, also matches the user's note field). Use to bulk-query structured CRM tags like `PMQ` (paid readers) encoded anywhere inside the contact display name. Network cost is O(N) FullUser calls — keep limit small.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Substring to match against first_name (case-insensitive). Example: `PMQ`, `Chris`, `BSC`.",
+                    },
+                    "match_note": {
+                        "type": "boolean",
+                        "description": "If true, also match pattern against the note field (requires one FullUser call per dialog, slower). Default false.",
+                        "default": False,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max contacts to return (default 30, cap 100).",
+                        "default": 30,
+                    },
+                    "dialog_scan_limit": {
+                        "type": "integer",
+                        "description": "How many DM dialogs to scan before stopping (default 500).",
+                        "default": 500,
+                    },
+                },
+                "required": ["pattern"],
+            },
+        ),
     ]
 
 
@@ -295,6 +339,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         elif name == "mark_read":
             result = await mark_read_impl(
                 channel=arguments["channel"],
+            )
+        elif name == "get_contact":
+            result = await get_contact_impl(
+                username=arguments["username"],
+            )
+        elif name == "list_contacts_matching":
+            result = await list_contacts_matching_impl(
+                pattern=arguments["pattern"],
+                match_note=bool(arguments.get("match_note", False)),
+                limit=min(arguments.get("limit", 30), 100),
+                dialog_scan_limit=arguments.get("dialog_scan_limit", 500),
             )
         else:
             result = {"error": f"Unknown tool: {name}"}
@@ -475,6 +530,109 @@ async def mark_read_impl(channel: str) -> dict:
         await client.send_read_acknowledge(entity)
         return {"success": True, "channel": name, "message": f"Marked {name} as read"}
 
+    finally:
+        await client.disconnect()
+
+
+def _status_to_iso(status) -> str | None:
+    """Best-effort extract of a last-seen timestamp from a Telethon UserStatus."""
+    if status is None:
+        return None
+    was_online = getattr(status, 'was_online', None)
+    if was_online is not None:
+        return was_online.isoformat()
+    return type(status).__name__
+
+
+async def _build_contact_dict(client, entity) -> dict:
+    """Resolve FullUser for a user entity and flatten into a plain dict."""
+    try:
+        full_resp = await client(GetFullUserRequest(entity))
+        fu = full_resp.full_user
+    except Exception as e:
+        fu = None
+        fu_err = str(e)
+    else:
+        fu_err = None
+
+    note = getattr(fu, 'note', None) if fu else None
+    return {
+        "id": entity.id,
+        "username": getattr(entity, 'username', None),
+        "first_name": getattr(entity, 'first_name', None),
+        "last_name": getattr(entity, 'last_name', None),
+        "phone": getattr(entity, 'phone', None),
+        "is_contact": bool(getattr(entity, 'contact', False)),
+        "is_mutual_contact": bool(getattr(entity, 'mutual_contact', False)),
+        "bio": getattr(fu, 'about', None) if fu else None,
+        "note": getattr(note, 'text', None) if note else None,
+        "common_groups_count": getattr(fu, 'common_chats_count', None) if fu else None,
+        "last_seen": _status_to_iso(getattr(entity, 'status', None)),
+        "full_user_error": fu_err,
+    }
+
+
+async def get_contact_impl(username: str) -> dict:
+    """Return contact-level details (first/last name, phone, bio, note, etc.) for one user."""
+    client = await get_client()
+    try:
+        try:
+            entity = await client.get_entity(username)
+        except Exception as e:
+            return {"error": f"Unable to resolve user {username}: {e}"}
+
+        # get_entity may return a Channel/Chat if the handle is ambiguous — guard against it.
+        if not hasattr(entity, 'first_name'):
+            return {"error": f"{username} is not a user (got {type(entity).__name__})"}
+
+        return await _build_contact_dict(client, entity)
+    finally:
+        await client.disconnect()
+
+
+async def list_contacts_matching_impl(
+    pattern: str,
+    match_note: bool = False,
+    limit: int = 30,
+    dialog_scan_limit: int = 500,
+) -> dict:
+    """Scan DM dialogs and return full contact details for users whose first_name (and optionally note) contains `pattern`."""
+    client = await get_client()
+    try:
+        pat_lower = pattern.lower()
+        contacts: list[dict] = []
+        scanned = 0
+
+        async for dialog in client.iter_dialogs():
+            if scanned >= dialog_scan_limit or len(contacts) >= limit:
+                break
+            scanned += 1
+            if dialog.is_channel or dialog.is_group:
+                continue
+            entity = dialog.entity
+            first = getattr(entity, 'first_name', '') or ''
+            last = getattr(entity, 'last_name', '') or ''
+            name_hit = pat_lower in first.lower() or pat_lower in last.lower()
+
+            if name_hit:
+                contacts.append(await _build_contact_dict(client, entity))
+                continue
+
+            if match_note:
+                # Pay the FullUser cost only when caller opted in.
+                detail = await _build_contact_dict(client, entity)
+                note_text = (detail.get("note") or "").lower()
+                if pat_lower in note_text:
+                    contacts.append(detail)
+
+        return {
+            "pattern": pattern,
+            "match_note": match_note,
+            "dialogs_scanned": scanned,
+            "contacts": contacts,
+            "count": len(contacts),
+            "truncated": len(contacts) >= limit,
+        }
     finally:
         await client.disconnect()
 
