@@ -2,12 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.2.0] - 2026-04-22
 
 ### Added
 - `get_contact` tool: read one user's first_name, last_name, username, phone, bio, **note** (the user-private contact note from TG client), is_contact, is_mutual_contact, common_groups_count, last_seen.
 - `list_contacts_matching` tool: bulk-scan DM dialogs for users whose first_name contains a substring (e.g. `PMQ` to enumerate paid-reader contacts). Optional `match_note=true` also searches note bodies at the cost of one FullUser call per scanned dialog.
-- Both tools surface `UserFull.note.text` from MTProto, which is server-persisted (not client-local), making contact notes usable as structured CRM data.
+- Both tools surface `UserFull.note.text` from MTProto, which is server-persisted (not client-local), making contact notes usable as structured CRM data — useful for encoding paid-reader tags, cohort labels, payment TX hashes directly in TG contacts without an external CRM.
 
 ## [0.1.0] - 2026-04-17
 

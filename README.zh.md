@@ -8,14 +8,16 @@
 
 给 bot 装"发消息"很常见，给 AI agent 装就是另一回事。prompt 滑一下、工具调用幻觉一次、频道 ID 抄错一位，下一秒 agent 就替你在别人群里说话了。
 
-这个 MCP 直接把刀收走。只开放四个工具：`list_dialogs` / `read_channel` / `search_channel` / `mark_read`。没有 send、没有 edit、没有 delete，想用都没接口。
+这个 MCP 直接把刀收走。只开放六个工具：`list_dialogs` / `read_channel` / `search_channel` / `mark_read` / `get_contact` / `list_contacts_matching`。没有 send、没有 edit、没有 delete，想用都没接口。
 
-## 四个工具做什么
+## 六个工具做什么
 
 - **`list_dialogs`** — 列出频道、群组、私聊。支持按关键词、未读状态、类型组合过滤，比如 `unread_dm` 只给你未读私聊。
 - **`read_channel`** — 读取指定频道/群的消息。`since` 按 ISO 时间戳正向过滤，`offset_date` 反向翻页。
 - **`search_channel`** — 在单个频道里搜关键词。
 - **`mark_read`** — 标记对话为已读。AI 消化完一批新消息后清掉"未读"状态，下次轮询不会再重复拉。
+- **`get_contact`** — 读一个联系人的卡片：first_name / last_name / username / phone / bio / **note** / is_contact / common_groups_count / last_seen。其中 `note` 是你在 TG 客户端手打的那条私人备注，走 MTProto 存在服务器上——agent 拿到就是结构化的 CRM 字段，不用你另建一张表。
+- **`list_contacts_matching`** — 批量扫 DM，把 first_name（可选连 note）里含某子串的联系人一次性捞出来。如果你习惯把标签直接写进联系人名字或备注（比如付费读者标 `PMQ`、某期群标 `BSC`），这个工具就是干这件事的。返回结构跟 `get_contact` 完全一致。
 
 ## 工作流长什么样
 
@@ -115,11 +117,12 @@ Telegram ToS：[telegram.org/tos](https://telegram.org/tos) · API ToS：[core.t
 
 [@runesgangalpha](https://t.me/runesgangalpha) — 我的公开频道，用的就是这个 MCP 在做 Polymarket / AI / Crypto 信号的读取和消化，算是这个工作流的活样本。
 
-## 当前版本限制（0.1.0）
+## 当前版本限制（0.2.0）
 
 - **不下载媒体**——只读文本。图片、视频、语音返回的 text 字段是空的。
 - **反应/转发链未暴露**——`views` 浏览量有，但 reactions、forward chain 拿不到。
 - **`since` 模式的翻页上限 500 条**——日常够用，深度回溯要配合 `offset_date` 多轮拉取。
+- **`list_contacts_matching` 带 `match_note=true` 是 O(N) 成本**——每扫一个 DM 要发一次 `GetFullUser`，几千条私聊会慢。`limit` 保持小、`dialog_scan_limit`（默认 500）按实际需要设。
 
 ## Roadmap
 
