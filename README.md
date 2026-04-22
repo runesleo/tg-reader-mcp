@@ -138,13 +138,13 @@ Follow [@runesgangalpha](https://t.me/runesgangalpha) — my public channel wher
 
 ## About the author
 
-Leo ([@runes_leo](https://x.com/runes_leo)) — AI × Crypto independent builder.
+*Leo ([@runes_leo](https://x.com/runes_leo)) — AI × Crypto independent builder. Trading on [Polymarket](https://polymarket.com/?r=githuball&via=runes-leo&utm_source=github&utm_content=tg-reader-mcp), building data and trading systems with Claude Code and Codex.*
 
-I use Claude Code to build two things:
-- **Prediction market trading** on [Polymarket](https://polymarket.com/?via=runes-leo&r=runesleo&utm_source=github&utm_content=tg-reader-mcp) — quant strategies and market making.
-- **Content automation** like this repo — pipelines that let one person ship at the pace of a team.
+[leolabs.me](https://leolabs.me) — writing · community · open-source tools · indie projects · all platforms.
 
-More at [leolabs.me](https://leolabs.me).
+[X Subscription](https://x.com/runes_leo/creator-subscriptions/subscribe) — paid content weekly, or just buy me a coffee 😁
+
+*Learn in public, Build in public.*
 
 ## License
 
