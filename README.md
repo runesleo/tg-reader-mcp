@@ -1,154 +1,166 @@
 # tg-reader-mcp
 
-A **read-only** Telegram MCP server. Let your AI agent read channels, groups, DMs, and contact cards — nothing else except clearing unread state (`mark_read`). No send. No edit. No delete.
+**中文：** 只读 Telegram MCP：用你本机已登录的账号，让 AI 读频道、群、私聊与联系人卡片；不发消息、不改记录、不删内容（仅提供 `mark_read` 清未读）。  
+**English:** [README.en.md](./README.en.md)
 
-[中文版](./README.zh.md)
+---
 
-## Why read-only
+## Quick Start
 
-Most Telegram bots can send, edit, delete, join, leave. That's fine for bots — it's dangerous for an AI agent with your own user session. A slip in a prompt, a hallucinated tool call, a mis-quoted channel ID, and suddenly your agent is posting in someone else's group.
-
-This server removes the blast radius. The tools are: `list_dialogs`, `read_channel`, `search_channel`, `mark_read`, `get_contact`, `list_contacts_matching`. No send. No edit. No delete.
-
-## What you get
-
-- **`list_dialogs`** — list channels, groups, DMs. Filter by keyword, unread state, or type (`unread_dm` gives only unread private chats).
-- **`read_channel`** — read recent messages from any channel or group. Paginate with `since` (ISO timestamp, forward) or `offset_date` (ISO timestamp, backward).
-- **`search_channel`** — keyword search inside one channel.
-- **`mark_read`** — mark a conversation as read. Useful when the agent has digested the new messages and should stop re-surfacing them.
-- **`get_contact`** — read one user's contact card: first_name, last_name, username, phone, bio, **note**, is_contact, common_groups_count, last_seen. The `note` field is the user-private contact note you type in the TG client — server-persisted via MTProto, so agents can treat it as structured CRM data.
-- **`list_contacts_matching`** — bulk-scan DM dialogs for contacts whose first_name, last_name (and optionally note body) contains a substring. Useful when you encode tags directly into contact names or notes (e.g. `VIP` for private labels, `BSC` for a cohort). Empty patterns are rejected. Returns the same shape as `get_contact`.
-
-## How it works
-
-You log in once with your Telegram account (userbot, via Telethon). The session file lives locally. The MCP server reuses that session to read messages. Every request calls `catch_up()` first to avoid stale data.
-
-```
-You: What did @durov post recently?
-AI:  [calls read_channel with channel="durov", limit=5]
-     → Durov posted 3 messages in the last 48h. Summary: ...
-```
-
-Multi-process safety is built in. Each MCP process gets its own copy of the session file (keyed by PID) to avoid SQLite contention when multiple clients connect simultaneously — a real pain point if you run Claude Code and another MCP client against the same session.
-
-## Setup
-
-### 1. Install
+### 1. 安装
 
 ```bash
 git clone https://github.com/runesleo/tg-reader-mcp.git
 cd tg-reader-mcp
-uv venv
-source .venv/bin/activate
+uv venv && source .venv/bin/activate
 uv pip install -e .
 ```
 
-### 2. Log in once
+### 2. 准备 Telethon session
 
-You need a Telethon `.session` file. The simplest way: run Telethon interactively once.
+需要本机有一份已授权的 `.session`（userbot 登录，非 Bot Token）。最小示例：
 
 ```python
-# login.py
+# login.py（在任意目录运行一次即可）
 from telethon import TelegramClient
 client = TelegramClient('tg_session', 94575, 'a3406de8d171bb422bb6ddf3bbd800e2')
 client.start()
-print("Logged in. tg_session.session created.")
+print("OK: tg_session.session")
 ```
 
 ```bash
 python login.py
-# Enter your phone, the code Telegram sends you, and 2FA if enabled.
 ```
 
-This creates `tg_session.session` in the current directory.
+默认 `API_ID` / `API_HASH` 与 Telegram Desktop 公开凭据一致。若要自建应用，在 [my.telegram.org](https://my.telegram.org) 申请并设置环境变量 `TG_API_ID`、`TG_API_HASH`。
 
-> The default `API_ID` / `API_HASH` above are Telegram Desktop's public credentials — safe to use. If you want your own (to raise rate limits or separate audit trails), get them at [my.telegram.org](https://my.telegram.org) and set `TG_API_ID` / `TG_API_HASH` env vars.
+### 3. Claude Desktop（`claude_desktop_config.json`）
 
-### 3. Wire into Claude Code
+将下面 **`mcpServers` 里的键值对** 合并进你现有配置文件的 `mcpServers` 对象中（路径示例：macOS `~/Library/Application Support/Claude/claude_desktop_config.json`）。把占位路径换成你的绝对路径。
+
+```json
+{
+  "mcpServers": {
+    "tg-reader": {
+      "command": "/ABSOLUTE/PATH/TO/tg-reader-mcp/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/TO/tg-reader-mcp/server.py"],
+      "env": {
+        "TG_SESSION_PATH": "/ABSOLUTE/PATH/TO/tg_session.session"
+      }
+    }
+  }
+}
+```
+
+可选环境变量：`TG_API_ID`、`TG_API_HASH`（覆盖默认 Telegram Desktop 凭据）。
+
+### 4. Claude Code（CLI）
 
 ```bash
 claude mcp add tg-reader -s user \
   -e TG_SESSION_PATH=/absolute/path/to/tg_session.session \
-  -- /absolute/path/to/.venv/bin/python /absolute/path/to/server.py
+  -- /absolute/path/to/tg-reader-mcp/.venv/bin/python /absolute/path/to/tg-reader-mcp/server.py
 ```
 
-Replace the paths with your actual locations.
+---
 
-### 4. Any other AI agent
+## Tools（与源码一致）
 
-Any MCP-compatible client works (Cursor, Claude Desktop, your own agent). Point it at `server.py` with `TG_SESSION_PATH` pointing to your `.session` file.
+以下名称与 `server.py` 中 `@server.list_tools()` 注册项一一对应。
 
-## ⚠️ Before you use
+### `list_dialogs`
 
-This is a **userbot**, not a bot-token bot. That has real consequences:
+- **用途：** 列出对话（频道 / 群 / 私聊），支持组合过滤与关键词。
+- **参数：**
+  - `filter`（可选）：如 `unread`、`unread_dm`、`unread_channel`、`channel`、`group`、`dm` 等组合；否则按对话标题 / username 子串匹配。
+  - `limit`（可选，默认 `50`）：最多返回条数。
+- **示例：**
 
-- You're logging in with your personal Telegram account. Every read looks like **you** are reading.
-- Telegram's ToS permits userbots but bans automation that harasses, scrapes at scale, or impersonates. Don't mass-read, don't poll faster than a human would, don't feed the output into a spam pipeline.
-- **Use a dedicated small account** if you'll be running heavy automation. If the account gets limited or banned, you lose access — not your main account.
-- The `.session` file **is** your login. Treat it like a password. Don't commit it. Don't share it. The `.gitignore` already covers `*.session` and `*.session-journal`.
+```json
+{ "filter": "unread_dm", "limit": 30 }
+```
 
-Telegram ToS: [telegram.org/tos](https://telegram.org/tos) · API ToS: [core.telegram.org/api/terms](https://core.telegram.org/api/terms)
+### `read_channel`
 
-## Requirements
+- **用途：** 读取指定频道或群的近期文本消息。
+- **参数：**
+  - `channel`（必填）：username（如 `durov`）或可被 Telethon 解析的标题。
+  - `limit`（可选，默认 `20`，上限 `100`）。
+  - `since`（可选）：ISO 8601 时间，仅返回**严格晚于**该时间的消息。
+  - `offset_date`（可选）：ISO 时间，从该时刻**向前翻页**（配合返回的 `next_offset_date`）。
+- **示例：**
 
-- Python 3.10+
-- `mcp>=1.0.0`, `telethon>=1.34.0` (both installed by `uv pip install -e .`)
-- A Telegram account you can log into via Telethon
-- That's it. No API keys beyond Telegram's, no database, no external services.
+```json
+{ "channel": "durov", "limit": 10, "since": "2026-04-20T00:00:00+08:00" }
+```
 
-## Supported input
+### `search_channel`
 
-| Parameter | Example | Resolution |
-|-----------|---------|-----------|
-| Channel username | `durov` | Public channel |
-| Group username | `runesgang` | Public group |
-| Full channel name | `Durov's Channel` | Fuzzy match via Telethon `get_entity` |
-| ISO timestamp | `2026-04-13T00:00:00+08:00` | Used by `since` / `offset_date` |
+- **用途：** 在**单个**频道/群内按关键词搜索消息。
+- **参数：**
+  - `channel`（必填）
+  - `keyword`（必填）
+  - `limit`（可选，默认 `20`）
+- **示例：**
 
-## Example workflows
+```json
+{ "channel": "runesgangalpha", "keyword": "Polymarket", "limit": 15 }
+```
 
-**Daily digest**: `list_dialogs` with `filter="unread_channel"` → `read_channel` each → summarize → `mark_read` to clear the queue.
+### `mark_read`
 
-**Signal research**: `search_channel` for a keyword across one alpha channel → feed results into an LLM for thesis extraction.
+- **用途：** 将某对话标为已读（清未读角标）。
+- **参数：**
+  - `channel`（必填）：频道、群或私聊标识（username 或标题）。
+- **示例：**
 
-**Cross-channel monitor**: loop `read_channel` with `since=<last_poll_time>` on N channels → only new messages come back.
+```json
+{ "channel": "某群名称或 username" }
+```
 
-## Real-world example channel
+### `get_contact`
 
-Follow [@runesgangalpha](https://t.me/runesgangalpha) — my public channel where I use this exact MCP to read and digest Polymarket, AI, and crypto signals. It's a live demo of the workflow.
+- **用途：** 查询**单个用户**的联系级信息（含 bio、共同群数量、`last_seen` 等）。`note` 为你在官方客户端里写的**仅自己可见**的联系人备注（需对方已是联系人等条件才有电话/备注等字段）。
+- **参数：**
+  - `username`（必填）：不带 `@` 的 username 或数字 user id。
+- **示例：**
 
-## Known limitations (0.2.0)
+```json
+{ "username": "durov" }
+```
 
-- **No media download yet** — text only. Photos, videos, voice messages return empty text.
-- **No reaction/view analytics beyond `views` count** — forwards, reactions not exposed.
-- **Hard pagination limit at 500** when using `since` mode — enough for most use cases, but heavy backfills need multiple `offset_date` calls.
-- **`list_contacts_matching` is O(N) on DM count** when `match_note=true` — each scanned dialog triggers one `GetFullUser` MTProto call. Keep `limit` small and cap `dialog_scan_limit` (default 500) if you have thousands of DMs.
+### `list_contacts_matching`
 
-## Roadmap
+- **用途：** 扫描私聊对话，找出 `first_name` / `last_name`（可选 `note`）中包含子串的联系人，返回结构与 `get_contact` 一致。`match_note=true` 时会对每个扫描到的 DM 调用 FullUser，成本随对话数上升，请控制 `limit` 与 `dialog_scan_limit`。
+- **参数：**
+  - `pattern`（必填）：非空子串，大小写不敏感。
+  - `match_note`（可选，默认 `false`）
+  - `limit`（可选，默认 `30`，上限 `100`）
+  - `dialog_scan_limit`（可选，默认 `500`）：最多扫描多少条 DM。
+- **示例：**
 
-**Read coverage**
-- [ ] Media download (photos, documents, voice)
-- [ ] Reactions and forward chain
-- [ ] Topic/thread support in forum-style groups
+```json
+{ "pattern": "VIP", "match_note": true, "limit": 20, "dialog_scan_limit": 200 }
+```
 
-**Performance**
-- [ ] Persistent connection pooling across requests
-- [ ] Optional Redis cache for frequently-read channels
+---
 
-**Deployment**
-- [ ] Docker image with volume-mounted session file
-- [ ] Remote MCP (HTTP transport) for multi-client setups
+## 使用场景
 
-## About the author
+1. **未读频道 digest：** `list_dialogs` 过滤 `unread_channel` → 对每条调用 `read_channel` → 总结后 `mark_read`。
+2. **增量监控：** 对固定频道保存上次拉取时间，下次用 `since` 只取新消息。
+3. **单频道检索：** Alpha 群里搜关键词，用 `search_channel` 定位历史讨论。
+4. **私域 CRM：** 把标签写在联系人备注里，用 `list_contacts_matching` 批量拉出对应人群。
+5. **核对对方资料：** 用 `get_contact` 拉 bio、共同群数量等辅助判断账号背景。
 
-*Leo ([@runes_leo](https://x.com/runes_leo)) — AI × Crypto independent builder. Trading on [Polymarket](https://polymarket.com/?r=githuball&via=runes-leo&utm_source=github&utm_content=tg-reader-mcp), building data and trading systems with Claude Code and Codex.*
+---
 
-[leolabs.me](https://leolabs.me) — writing · community · open-source tools · indie projects · all platforms.
+## 重要说明
 
-[X Subscription](https://x.com/runes_leo/creator-subscriptions/subscribe) — paid content weekly, or just buy me a coffee 😁
-
-*Learn in public, Build in public.*
+- 这是 **userbot**：行为等同于你的个人账号在读消息；请遵守 Telegram [ToS](https://telegram.org/tos) 与 [API 条款](https://core.telegram.org/api/terms)，避免高频轮询与大规模抓取。
+- `.session` 等同于登录凭证：勿提交仓库、勿外泄。仓库 `.gitignore` 已忽略常见 session 文件。
+- 当前实现以**文本**为主；媒体、反应链等能力见仓库内其他说明或 issue。
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — 见 [LICENSE](./LICENSE)。

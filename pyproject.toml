@@ -40,4 +40,4 @@ build-backend = "hatchling.build"
 only-include = ["server.py"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["server.py", "README.md", "README.zh.md", "CHANGELOG.md", "LICENSE"]
+only-include = ["server.py", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE"]
