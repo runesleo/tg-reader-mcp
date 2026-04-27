@@ -1,6 +1,14 @@
 # Changelog
 
+**Repository:** https://github.com/runesleo/tg-reader-mcp
+
 All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+### Documentation
+
+- Bilingual README refresh ([#1](https://github.com/runesleo/tg-reader-mcp/pull/1), [`a998264`](https://github.com/runesleo/tg-reader-mcp/commit/a9982642908b4c94edbbd7a2841031ff1d38a8fa)).
 
 ## [0.2.1] - 2026-04-22
 
