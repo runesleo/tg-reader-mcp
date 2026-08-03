@@ -161,6 +161,15 @@ claude mcp add tg-reader -s user \
 - `.session` 等同于登录凭证：勿提交仓库、勿外泄。仓库 `.gitignore` 已忽略常见 session 文件。
 - 当前实现以**文本**为主；媒体、反应链等能力见仓库内其他说明或 issue。
 
+## 同源的其他工具
+
+完整地图：**[runesleo](https://github.com/runesleo/runesleo)** — 全部开源项目与工作系统。
+
+- [x-reader](https://github.com/runesleo/x-reader) — 通用内容阅读 MCP，支持 10+ 平台
+- [claude-code-workflow](https://github.com/runesleo/claude-code-workflow) — QuietHarness：Claude Code / Codex / Cursor 共用的 AI 工作系统
+- [ai-health-vault](https://github.com/runesleo/ai-health-vault) — AI + Obsidian 健康管理系统
+- [polymarket-toolkit](https://github.com/runesleo/polymarket-toolkit) — Polymarket 研究 CLI + AI Skills
+
 ## License
 
 MIT — 见 [LICENSE](./LICENSE)。
