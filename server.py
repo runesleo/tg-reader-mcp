@@ -14,11 +14,14 @@ Security notes:
 """
 
 import os
+import re
 import sys
 import json
 import stat
 import uuid
+import time
 import atexit
+import signal
 import asyncio
 import shutil
 import tempfile
@@ -97,6 +100,7 @@ else:
 _PID_SESSION_COPY: Path | None = None
 _PID_LOCK = threading.Lock()
 _ATEXIT_REGISTERED = False
+_PREV_HANDLERS: dict[int, Any] = {}
 
 # Initialize the MCP server.
 server = Server("tg-reader-mcp")
@@ -138,7 +142,12 @@ def _get_pid_session_path() -> str:
         _PID_SESSION_COPY = target
         if not _ATEXIT_REGISTERED:
             atexit.register(_cleanup_pid_session)
+            _install_signal_cleanup()
             _ATEXIT_REGISTERED = True
+            # Backstop for copies orphaned by SIGKILL / crashes in earlier runs.
+            n = _sweep_stale_session_copies()
+            if n:
+                print(f"[tg-reader-mcp] Swept {n} stale session file(s).", file=sys.stderr)
         return str(target.with_suffix(''))
 
 
@@ -153,6 +162,84 @@ def _cleanup_pid_session() -> None:
                 p.unlink()
         except OSError:
             pass
+
+
+def _install_signal_cleanup() -> None:
+    """Run the atexit cleanup on SIGTERM/SIGINT too.
+
+    atexit only fires on a *normal* interpreter exit. MCP clients shut the server
+    down with SIGTERM, which Python does not handle by default -- the process dies
+    without ever running the atexit hook, leaking one session copy per shutdown.
+    Chaining to any previously installed handler keeps us a good citizen.
+    """
+    def _handler(signum, frame):
+        _cleanup_pid_session()
+        prev = _PREV_HANDLERS.get(signum)
+        if callable(prev):
+            prev(signum, frame)
+            return
+        # Restore default disposition and re-raise so the exit status is honest.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            _PREV_HANDLERS[sig] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not on the main thread, or platform refuses -- sweep still covers us.
+            pass
+
+
+def _sweep_stale_session_copies(max_age_seconds: int = 3600) -> int:
+    """Delete session copies left behind by processes that are already gone.
+
+    Signal handlers cannot cover SIGKILL or a hard crash, so this is the real
+    backstop: on every startup, drop any `tg_session_mcp_<pid>_<uuid>.session`
+    whose PID no longer exists. The age floor guards against PID reuse and
+    against racing a sibling process that just created its copy.
+
+    Returns the number of files removed. Never raises -- cleanup must not
+    prevent the server from starting.
+    """
+    removed = 0
+    pattern = re.compile(r'^tg_session_mcp_(\d+)_[0-9a-f]+$')
+    now = time.time()
+    try:
+        candidates = list(TG_READER_DIR.glob('tg_session_mcp_*.session'))
+    except OSError:
+        return 0
+
+    for path in candidates:
+        m = pattern.match(path.stem)
+        if not m:
+            continue                                  # unrecognised name: leave it alone
+        pid = int(m.group(1))
+        if pid == os.getpid():
+            continue
+        try:
+            if now - path.stat().st_mtime < max_age_seconds:
+                continue                              # too fresh: may be a live sibling
+        except OSError:
+            continue
+        try:
+            os.kill(pid, 0)                           # signal 0 = liveness probe only
+            continue                                  # still running: not ours to remove
+        except ProcessLookupError:
+            pass                                      # owner is gone -> stale
+        except PermissionError:
+            continue                                  # exists under another user
+        except OSError:
+            continue
+        for suffix in ('.session', '.session-journal'):
+            p = path.with_suffix(suffix)
+            try:
+                if p.exists():
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 async def get_client():
