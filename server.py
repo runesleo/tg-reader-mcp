@@ -514,6 +514,35 @@ async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) 
         await client.disconnect()
 
 
+def _sender_fields(message) -> dict:
+    """谁发的 —— 2026-08-18 加。
+
+    为什么存在：read_channel / search_channel 原本只返回 id/date/text，
+    调用方（含 Claude）无法区分 Leo 自己的话与对方的话，只能靠上下文推断，
+    实测多次推错（把 Leo 说的归给对方，反之亦然），且错误会一路写进档案。
+
+    `out` 是 Telethon 直接给的布尔，零成本、不会错，是唯一可定死方向的字段。
+    `sender` 走已缓存的 entity（property，不是 coroutine，不会额外发请求），
+    取不到就留 None —— 群里判断「谁说的」需要它，DM 里有 from_me 就够。
+    """
+    fields = {
+        "from_me": bool(getattr(message, 'out', False)),
+        "sender_id": getattr(message, 'sender_id', None),
+        "sender": None,
+    }
+    try:
+        s = message.sender
+        if s is not None:
+            name = ' '.join(filter(None, [getattr(s, 'first_name', None),
+                                          getattr(s, 'last_name', None)])).strip()
+            fields["sender"] = (getattr(s, 'username', None)
+                                or name
+                                or getattr(s, 'title', None))
+    except Exception:
+        pass
+    return fields
+
+
 async def read_channel_impl(
     channel: str,
     limit: int = 20,
@@ -563,6 +592,7 @@ async def read_channel_impl(
                 "date": message.date.isoformat(),
                 "text": message.text[:2000],
                 "views": message.views,
+                **_sender_fields(message),
             })
             if since_dt and len(messages) >= limit:
                 break
@@ -597,6 +627,7 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
                     "id": message.id,
                     "date": message.date.isoformat(),
                     "text": message.text[:2000],
+                    **_sender_fields(message),
                 })
 
         return {
