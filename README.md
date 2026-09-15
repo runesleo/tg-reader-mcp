@@ -52,7 +52,7 @@ python login.py
 }
 ```
 
-可选环境变量：`TG_API_ID`、`TG_API_HASH`（覆盖默认 Telegram Desktop 凭据）。
+可选环境变量：`TG_API_ID`、`TG_API_HASH`（覆盖默认 Telegram Desktop 凭据）。如果直连 Telegram 失败，可设置 `TG_PROXY_URL`；支持 `http://`、`socks5://`、`socks4://`，例如本机代理可写 `http://127.0.0.1:7897`。
 
 ### 4. Claude Code（CLI）
 
@@ -68,6 +68,16 @@ claude mcp add tg-reader -s user \
 
 以下名称与 `server.py` 中 `@server.list_tools()` 注册项一一对应。
 
+### `download_media`
+
+- **用途：** 显式下载某条 Telegram 消息附带的 photo / image / video / document 到本地路径；远端只读。
+- **参数：** `channel`（必填）、`message_id`（必填）、`out_dir`（可选，默认 `~/.cache/tg-media`）。
+- **示例：**
+
+```json
+{ "channel": "durov", "message_id": 12345 }
+```
+
 ### `list_dialogs`
 
 - **用途：** 列出对话（频道 / 群 / 私聊），支持组合过滤与关键词。
@@ -82,7 +92,7 @@ claude mcp add tg-reader -s user \
 
 ### `read_channel`
 
-- **用途：** 读取指定频道或群的近期文本消息。
+- **用途：** 读取指定频道或群的近期文本与媒体消息元数据；每条消息同时返回 `from_me`、`sender_id`、`sender`，媒体消息额外带 `media` / `media_hint`。
 - **参数：**
   - `channel`（必填）：username（如 `durov`）或可被 Telethon 解析的标题。
   - `limit`（可选，默认 `20`，上限 `100`）。
@@ -159,7 +169,7 @@ claude mcp add tg-reader -s user \
 
 - 这是 **userbot**：行为等同于你的个人账号在读消息；请遵守 Telegram [ToS](https://telegram.org/tos) 与 [API 条款](https://core.telegram.org/api/terms)，避免高频轮询与大规模抓取。
 - `.session` 等同于登录凭证：勿提交仓库、勿外泄。仓库 `.gitignore` 已忽略常见 session 文件。
-- 当前实现以**文本**为主；媒体、反应链等能力见仓库内其他说明或 issue。
+- 媒体不会自动下载：`read_channel` / `search_channel` 只返回媒体类型与提示；需要本地文件时显式调用 `download_media`。反应链等更丰富能力仍不在当前工具范围。
 
 ## License
 

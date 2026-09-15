@@ -19,8 +19,9 @@ classifiers = [
     "Topic :: Communications :: Chat",
 ]
 dependencies = [
-    "mcp>=1.0.0",
-    "telethon>=1.34.0",
+    "mcp>=1.0.0,<2.0.0",
+    "telethon>=1.34.0,<1.44.0",
+    "python-socks[asyncio]>=2.4.0",
 ]
 
 [project.urls]

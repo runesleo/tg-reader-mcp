@@ -52,7 +52,7 @@ Merge the **`tg-reader` entry below** into the existing `mcpServers` object (mac
 }
 ```
 
-Optional env: `TG_API_ID`, `TG_API_HASH`.
+Optional env: `TG_API_ID`, `TG_API_HASH`. If direct Telegram connectivity fails, set `TG_PROXY_URL`; `http://`, `socks5://`, and `socks4://` are supported (for example `http://127.0.0.1:7897` for a local proxy).
 
 ### 4. Claude Code (CLI)
 
@@ -68,6 +68,16 @@ claude mcp add tg-reader -s user \
 
 Each name is registered in `list_tools()` and dispatched in `call_tool()`.
 
+### `download_media`
+
+- **Purpose:** Explicitly download the photo/image/video/document attached to one Telegram message to a local path; remote-side behavior remains read-only.
+- **Parameters:** `channel` (required), `message_id` (required), `out_dir` (optional; defaults to `~/.cache/tg-media`).
+- **Example:**
+
+```json
+{ "channel": "durov", "message_id": 12345 }
+```
+
 ### `list_dialogs`
 
 - **Purpose:** List dialogs (channels, groups, DMs) with optional filters.
@@ -82,7 +92,7 @@ Each name is registered in `list_tools()` and dispatched in `call_tool()`.
 
 ### `read_channel`
 
-- **Purpose:** Fetch recent text messages from one channel or group.
+- **Purpose:** Fetch recent text plus media-message metadata from one channel or group. Each message includes `from_me`, `sender_id`, and `sender`; media messages also include `media` / `media_hint`.
 - **Parameters:**
   - `channel` (required): username or resolvable title.
   - `limit` (optional, default `20`, max `100`).
@@ -150,7 +160,7 @@ Each name is registered in `list_tools()` and dispatched in `call_tool()`.
 
 - This is a **userbot**: traffic looks like your personal account. Respect [Telegram ToS](https://telegram.org/tos) and [API terms](https://core.telegram.org/api/terms); avoid aggressive automation.
 - Treat `.session` like a password—never commit or share it.
-- Text-first today; rich media and reactions are out of scope for these tools.
+- Media is not downloaded automatically: `read_channel` / `search_channel` return media type/hints, and `download_media` is the explicit local-file step. Reactions and richer interaction remain out of scope.
 
 ## License
 

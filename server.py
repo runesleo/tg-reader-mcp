@@ -14,11 +14,14 @@ Security notes:
 """
 
 import os
+import re
 import sys
 import json
 import stat
 import uuid
+import time
 import atexit
+import signal
 import asyncio
 import shutil
 import tempfile
@@ -26,6 +29,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # MCP SDK
 from mcp.server import Server
@@ -46,6 +50,7 @@ except ImportError:
 # Override with TG_API_ID / TG_API_HASH for your own (see https://my.telegram.org).
 API_ID = os.getenv('TG_API_ID', '94575')
 API_HASH = os.getenv('TG_API_HASH', 'a3406de8d171bb422bb6ddf3bbd800e2')
+TG_PROXY_URL = os.getenv('TG_PROXY_URL', '').strip()
 
 # Session file path (user's login credential).
 # Preferred: set TG_SESSION_PATH env var to the absolute path of your .session file.
@@ -97,6 +102,7 @@ else:
 _PID_SESSION_COPY: Path | None = None
 _PID_LOCK = threading.Lock()
 _ATEXIT_REGISTERED = False
+_PREV_HANDLERS: dict[int, Any] = {}
 
 # Initialize the MCP server.
 server = Server("tg-reader-mcp")
@@ -138,7 +144,12 @@ def _get_pid_session_path() -> str:
         _PID_SESSION_COPY = target
         if not _ATEXIT_REGISTERED:
             atexit.register(_cleanup_pid_session)
+            _install_signal_cleanup()
             _ATEXIT_REGISTERED = True
+            # Backstop for copies orphaned by SIGKILL / crashes in earlier runs.
+            n = _sweep_stale_session_copies()
+            if n:
+                print(f"[tg-reader-mcp] Swept {n} stale session file(s).", file=sys.stderr)
         return str(target.with_suffix(''))
 
 
@@ -155,6 +166,116 @@ def _cleanup_pid_session() -> None:
             pass
 
 
+def _install_signal_cleanup() -> None:
+    """Run the atexit cleanup on SIGTERM/SIGINT too.
+
+    atexit only fires on a *normal* interpreter exit. MCP clients shut the server
+    down with SIGTERM, which Python does not handle by default -- the process dies
+    without ever running the atexit hook, leaking one session copy per shutdown.
+    Chaining to any previously installed handler keeps us a good citizen.
+    """
+    def _handler(signum, frame):
+        _cleanup_pid_session()
+        prev = _PREV_HANDLERS.get(signum)
+        if callable(prev):
+            prev(signum, frame)
+            return
+        # Restore default disposition and re-raise so the exit status is honest.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            _PREV_HANDLERS[sig] = signal.getsignal(sig)
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # Not on the main thread, or platform refuses -- sweep still covers us.
+            pass
+
+
+def _sweep_stale_session_copies(max_age_seconds: int = 3600) -> int:
+    """Delete session copies left behind by processes that are already gone.
+
+    Signal handlers cannot cover SIGKILL or a hard crash, so this is the real
+    backstop: on every startup, drop any `tg_session_mcp_<pid>_<uuid>.session`
+    whose PID no longer exists. The age floor guards against PID reuse and
+    against racing a sibling process that just created its copy.
+
+    Returns the number of files removed. Never raises -- cleanup must not
+    prevent the server from starting.
+    """
+    removed = 0
+    pattern = re.compile(r'^tg_session_mcp_(\d+)_[0-9a-f]+$')
+    now = time.time()
+    try:
+        candidates = list(TG_READER_DIR.glob('tg_session_mcp_*.session'))
+    except OSError:
+        return 0
+
+    for path in candidates:
+        m = pattern.match(path.stem)
+        if not m:
+            continue                                  # unrecognised name: leave it alone
+        pid = int(m.group(1))
+        if pid == os.getpid():
+            continue
+        try:
+            if now - path.stat().st_mtime < max_age_seconds:
+                continue                              # too fresh: may be a live sibling
+        except OSError:
+            continue
+        try:
+            os.kill(pid, 0)                           # signal 0 = liveness probe only
+            continue                                  # still running: not ours to remove
+        except ProcessLookupError:
+            pass                                      # owner is gone -> stale
+        except PermissionError:
+            continue                                  # exists under another user
+        except OSError:
+            continue
+        for suffix in ('.session', '.session-journal'):
+            p = path.with_suffix(suffix)
+            try:
+                if p.exists():
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _telethon_proxy():
+    """Return a Telethon proxy tuple from TG_PROXY_URL, or None for direct I/O."""
+    if not TG_PROXY_URL:
+        return None
+
+    parsed = urlparse(TG_PROXY_URL)
+    if parsed.username or parsed.password:
+        raise RuntimeError("TG_PROXY_URL authentication is not supported; use a local unauthenticated proxy")
+    if not parsed.hostname:
+        raise RuntimeError("TG_PROXY_URL must include a proxy hostname")
+
+    scheme = parsed.scheme.lower()
+    try:
+        from python_socks import ProxyType
+    except ImportError as exc:
+        raise RuntimeError(
+            "TG_PROXY_URL is set but python-socks is missing; install python-socks[asyncio]"
+        ) from exc
+
+    proxy_types = {
+        'http': ProxyType.HTTP,
+        'socks5': ProxyType.SOCKS5,
+        'socks4': ProxyType.SOCKS4,
+    }
+    proxy_type = proxy_types.get(scheme)
+    if proxy_type is None:
+        raise RuntimeError("TG_PROXY_URL scheme must be http, socks5, or socks4")
+
+    default_port = 80 if scheme == 'http' else 1080
+    return (proxy_type, parsed.hostname, parsed.port or default_port)
+
+
 async def get_client():
     """Return a connected Telethon client for this process."""
     if not API_ID or not API_HASH:
@@ -169,7 +290,7 @@ async def get_client():
         )
 
     session_path = _get_pid_session_path()
-    client = TelegramClient(session_path, int(API_ID), API_HASH)
+    client = TelegramClient(session_path, int(API_ID), API_HASH, proxy=_telethon_proxy())
 
     try:
         await client.connect()
@@ -192,6 +313,19 @@ async def get_client():
 async def list_tools() -> list[Tool]:
     """Return the list of available MCP tools."""
     return [
+        Tool(
+            name="download_media",
+            description="Download the media (photo/image/video/document) attached to one Telegram message and return a local file path that can be read directly. Read-only on the remote side.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel or group username or full title."},
+                    "message_id": {"type": "integer", "description": "The message id carrying the media (from read_channel / search_channel)."},
+                    "out_dir": {"type": "string", "description": "Optional output directory. Defaults to ~/.cache/tg-media."},
+                },
+                "required": ["channel", "message_id"],
+            },
+        ),
         Tool(
             name="list_dialogs",
             description="List all Telegram dialogs (channels, groups, DMs). Supports combined filters like `unread_dm` (unread private chats only), `unread_channel`, `unread_group`, or any free-text keyword.",
@@ -330,6 +464,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 filter_keyword=arguments.get("filter"),
                 limit=arguments.get("limit", 50),
             )
+        elif name == "download_media":
+            result = await download_media_impl(
+                arguments["channel"], int(arguments["message_id"]), arguments.get("out_dir")
+            )
         elif name == "read_channel":
             result = await read_channel_impl(
                 channel=arguments["channel"],
@@ -427,6 +565,82 @@ async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) 
         await client.disconnect()
 
 
+def _sender_fields(message) -> dict:
+    """谁发的 —— 2026-08-18 加。
+
+    为什么存在：read_channel / search_channel 原本只返回 id/date/text，
+    调用方（含 Claude）无法区分 Leo 自己的话与对方的话，只能靠上下文推断，
+    实测多次推错（把 Leo 说的归给对方，反之亦然），且错误会一路写进档案。
+
+    `out` 是 Telethon 直接给的布尔，零成本、不会错，是唯一可定死方向的字段。
+    `sender` 走已缓存的 entity（property，不是 coroutine，不会额外发请求），
+    取不到就留 None —— 群里判断「谁说的」需要它，DM 里有 from_me 就够。
+    """
+    fields = {
+        "from_me": bool(getattr(message, 'out', False)),
+        "sender_id": getattr(message, 'sender_id', None),
+        "sender": None,
+    }
+    try:
+        s = message.sender
+        if s is not None:
+            name = ' '.join(filter(None, [getattr(s, 'first_name', None),
+                                          getattr(s, 'last_name', None)])).strip()
+            fields["sender"] = (getattr(s, 'username', None)
+                                or name
+                                or getattr(s, 'title', None))
+    except Exception:
+        pass
+    return fields
+
+
+def _media_kind(message) -> str | None:
+    """返回媒体类型；无媒体返回 None。纯文本消息不受影响。"""
+    m = getattr(message, "media", None)
+    if not m:
+        return None
+    if getattr(message, "photo", None):
+        return "photo"
+    doc = getattr(message, "document", None)
+    if doc:
+        mime = getattr(doc, "mime_type", "") or ""
+        if mime.startswith("image/"):
+            return "image"
+        if mime.startswith("video/"):
+            return "video"
+        return f"document:{mime or 'unknown'}"
+    return type(m).__name__
+
+
+async def download_media_impl(channel: str, message_id: int, out_dir: str | None = None) -> dict:
+    """把指定消息的媒体下载到本地，返回可直接 Read 的路径。只读远端，不改任何消息。"""
+    import os
+    from pathlib import Path
+    out = Path(out_dir or os.environ.get("TG_MEDIA_DIR")
+               or (Path.home() / ".cache" / "tg-media"))
+    out.mkdir(parents=True, exist_ok=True)
+    client = await get_client()
+    try:
+        entity = await client.get_entity(channel)
+        msg = await client.get_messages(entity, ids=message_id)
+        if msg is None:
+            return {"ok": False, "error": f"message {message_id} not found"}
+        if not getattr(msg, "media", None):
+            return {"ok": False, "error": f"message {message_id} has no media",
+                    "text": (msg.text or "")[:500]}
+        path = await client.download_media(msg, file=str(out))
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "media": _media_kind(msg),
+            "path": str(path),
+            "caption": (msg.text or "")[:500],
+            "date": msg.date.isoformat(),
+        }
+    finally:
+        await client.disconnect()
+
+
 async def read_channel_impl(
     channel: str,
     limit: int = 20,
@@ -465,18 +679,26 @@ async def read_channel_impl(
         # Iterate and collect messages.
         messages = []
         async for message in client.iter_messages(entity, **iter_kwargs):
-            if not (isinstance(message, Message) and message.text):
+            if not isinstance(message, Message):
+                continue
+            if not (message.text or message.media):
                 continue
             # iter_messages is reverse-chronological, so a message older than
             # `since` means we've passed the window and can stop early.
             if since_dt and message.date < since_dt:
                 break
-            messages.append({
+            _m = {
                 "id": message.id,
                 "date": message.date.isoformat(),
-                "text": message.text[:2000],
+                "text": (message.text or "")[:2000],
                 "views": message.views,
-            })
+                **_sender_fields(message),
+            }
+            _mt = _media_kind(message)
+            if _mt:
+                _m["media"] = _mt
+                _m["media_hint"] = f"download_media(channel=…, message_id={message.id})"
+            messages.append(_m)
             if since_dt and len(messages) >= limit:
                 break
 
@@ -505,11 +727,12 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
 
         messages = []
         async for message in client.iter_messages(entity, search=keyword, limit=limit):
-            if isinstance(message, Message) and message.text:
+            if isinstance(message, Message) and (message.text or message.media):
                 messages.append({
                     "id": message.id,
                     "date": message.date.isoformat(),
-                    "text": message.text[:2000],
+                    "text": (message.text or "")[:2000],
+                    **_sender_fields(message),
                 })
 
         return {
