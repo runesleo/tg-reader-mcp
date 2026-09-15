@@ -29,6 +29,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 # MCP SDK
 from mcp.server import Server
@@ -49,6 +50,7 @@ except ImportError:
 # Override with TG_API_ID / TG_API_HASH for your own (see https://my.telegram.org).
 API_ID = os.getenv('TG_API_ID', '94575')
 API_HASH = os.getenv('TG_API_HASH', 'a3406de8d171bb422bb6ddf3bbd800e2')
+TG_PROXY_URL = os.getenv('TG_PROXY_URL', '').strip()
 
 # Session file path (user's login credential).
 # Preferred: set TG_SESSION_PATH env var to the absolute path of your .session file.
@@ -242,6 +244,38 @@ def _sweep_stale_session_copies(max_age_seconds: int = 3600) -> int:
     return removed
 
 
+def _telethon_proxy():
+    """Return a Telethon proxy tuple from TG_PROXY_URL, or None for direct I/O."""
+    if not TG_PROXY_URL:
+        return None
+
+    parsed = urlparse(TG_PROXY_URL)
+    if parsed.username or parsed.password:
+        raise RuntimeError("TG_PROXY_URL authentication is not supported; use a local unauthenticated proxy")
+    if not parsed.hostname:
+        raise RuntimeError("TG_PROXY_URL must include a proxy hostname")
+
+    scheme = parsed.scheme.lower()
+    try:
+        from python_socks import ProxyType
+    except ImportError as exc:
+        raise RuntimeError(
+            "TG_PROXY_URL is set but python-socks is missing; install python-socks[asyncio]"
+        ) from exc
+
+    proxy_types = {
+        'http': ProxyType.HTTP,
+        'socks5': ProxyType.SOCKS5,
+        'socks4': ProxyType.SOCKS4,
+    }
+    proxy_type = proxy_types.get(scheme)
+    if proxy_type is None:
+        raise RuntimeError("TG_PROXY_URL scheme must be http, socks5, or socks4")
+
+    default_port = 80 if scheme == 'http' else 1080
+    return (proxy_type, parsed.hostname, parsed.port or default_port)
+
+
 async def get_client():
     """Return a connected Telethon client for this process."""
     if not API_ID or not API_HASH:
@@ -256,7 +290,7 @@ async def get_client():
         )
 
     session_path = _get_pid_session_path()
-    client = TelegramClient(session_path, int(API_ID), API_HASH)
+    client = TelegramClient(session_path, int(API_ID), API_HASH, proxy=_telethon_proxy())
 
     try:
         await client.connect()
