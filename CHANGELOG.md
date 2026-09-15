@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Explicit `TG_PROXY_URL` support for HTTP / SOCKS5 / SOCKS4 proxies via `python-socks`, so Telethon can work behind local proxy setups instead of relying on OS HTTP proxy settings.
+- `download_media` for opt-in local download of photo/image/video/document attachments; `read_channel` and `search_channel` now surface media metadata without downloading automatically.
+- `from_me`, `sender_id`, and `sender` fields on message reads to remove ambiguity about who said what.
+
+### Fixed
+- Per-process Telethon session copies are cleaned on SIGTERM/SIGINT and stale orphan copies are swept on startup.
+- Dependency bounds now keep the server on compatible MCP 1.x / Telethon <1.44 behavior and install the proxy dependency explicitly.
+
 ### Documentation
 
 - Bilingual README refresh ([#1](https://github.com/runesleo/tg-reader-mcp/pull/1), [`a998264`](https://github.com/runesleo/tg-reader-mcp/commit/a9982642908b4c94edbbd7a2841031ff1d38a8fa)).
