@@ -314,6 +314,19 @@ async def list_tools() -> list[Tool]:
     """Return the list of available MCP tools."""
     return [
         Tool(
+            name="download_media",
+            description="Download the media (photo/image/video/document) attached to one Telegram message and return a local file path that can be read directly. Read-only on the remote side.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string", "description": "Channel or group username or full title."},
+                    "message_id": {"type": "integer", "description": "The message id carrying the media (from read_channel / search_channel)."},
+                    "out_dir": {"type": "string", "description": "Optional output directory. Defaults to ~/.cache/tg-media."},
+                },
+                "required": ["channel", "message_id"],
+            },
+        ),
+        Tool(
             name="list_dialogs",
             description="List all Telegram dialogs (channels, groups, DMs). Supports combined filters like `unread_dm` (unread private chats only), `unread_channel`, `unread_group`, or any free-text keyword.",
             inputSchema={
@@ -451,6 +464,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 filter_keyword=arguments.get("filter"),
                 limit=arguments.get("limit", 50),
             )
+        elif name == "download_media":
+            result = await download_media_impl(
+                arguments["channel"], int(arguments["message_id"]), arguments.get("out_dir")
+            )
         elif name == "read_channel":
             result = await read_channel_impl(
                 channel=arguments["channel"],
@@ -577,6 +594,53 @@ def _sender_fields(message) -> dict:
     return fields
 
 
+def _media_kind(message) -> str | None:
+    """返回媒体类型；无媒体返回 None。纯文本消息不受影响。"""
+    m = getattr(message, "media", None)
+    if not m:
+        return None
+    if getattr(message, "photo", None):
+        return "photo"
+    doc = getattr(message, "document", None)
+    if doc:
+        mime = getattr(doc, "mime_type", "") or ""
+        if mime.startswith("image/"):
+            return "image"
+        if mime.startswith("video/"):
+            return "video"
+        return f"document:{mime or 'unknown'}"
+    return type(m).__name__
+
+
+async def download_media_impl(channel: str, message_id: int, out_dir: str | None = None) -> dict:
+    """把指定消息的媒体下载到本地，返回可直接 Read 的路径。只读远端，不改任何消息。"""
+    import os
+    from pathlib import Path
+    out = Path(out_dir or os.environ.get("TG_MEDIA_DIR")
+               or (Path.home() / ".cache" / "tg-media"))
+    out.mkdir(parents=True, exist_ok=True)
+    client = await get_client()
+    try:
+        entity = await client.get_entity(channel)
+        msg = await client.get_messages(entity, ids=message_id)
+        if msg is None:
+            return {"ok": False, "error": f"message {message_id} not found"}
+        if not getattr(msg, "media", None):
+            return {"ok": False, "error": f"message {message_id} has no media",
+                    "text": (msg.text or "")[:500]}
+        path = await client.download_media(msg, file=str(out))
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "media": _media_kind(msg),
+            "path": str(path),
+            "caption": (msg.text or "")[:500],
+            "date": msg.date.isoformat(),
+        }
+    finally:
+        await client.disconnect()
+
+
 async def read_channel_impl(
     channel: str,
     limit: int = 20,
@@ -615,19 +679,26 @@ async def read_channel_impl(
         # Iterate and collect messages.
         messages = []
         async for message in client.iter_messages(entity, **iter_kwargs):
-            if not (isinstance(message, Message) and message.text):
+            if not isinstance(message, Message):
+                continue
+            if not (message.text or message.media):
                 continue
             # iter_messages is reverse-chronological, so a message older than
             # `since` means we've passed the window and can stop early.
             if since_dt and message.date < since_dt:
                 break
-            messages.append({
+            _m = {
                 "id": message.id,
                 "date": message.date.isoformat(),
-                "text": message.text[:2000],
+                "text": (message.text or "")[:2000],
                 "views": message.views,
                 **_sender_fields(message),
-            })
+            }
+            _mt = _media_kind(message)
+            if _mt:
+                _m["media"] = _mt
+                _m["media_hint"] = f"download_media(channel=…, message_id={message.id})"
+            messages.append(_m)
             if since_dt and len(messages) >= limit:
                 break
 
@@ -656,11 +727,11 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
 
         messages = []
         async for message in client.iter_messages(entity, search=keyword, limit=limit):
-            if isinstance(message, Message) and message.text:
+            if isinstance(message, Message) and (message.text or message.media):
                 messages.append({
                     "id": message.id,
                     "date": message.date.isoformat(),
-                    "text": message.text[:2000],
+                    "text": (message.text or "")[:2000],
                     **_sender_fields(message),
                 })
 
