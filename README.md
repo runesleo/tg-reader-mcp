@@ -1,6 +1,6 @@
 # tg-reader-mcp
 
-**中文：** 只读 Telegram MCP：用你本机已登录的账号，让 AI 读频道、群、私聊与联系人卡片；不发消息、不改记录、不删内容（仅提供 `mark_read` 清未读）。  
+**中文：** Telegram MCP：复用你本机已登录的账号读取频道、群、私聊与联系人卡片，并提供受保护的 `send_message` / `join_chat` 写操作。发送默认做精确文本去重；不提供编辑或删除消息。  
 **English:** [README.en.md](./README.en.md)
 
 ---
@@ -115,6 +115,26 @@ claude mcp add tg-reader -s user \
 
 ```json
 { "channel": "runesgangalpha", "keyword": "Polymarket", "limit": 15 }
+```
+
+### `send_message`
+
+- **用途：** 向私聊、群或频道发送一条纯文本消息。默认在最近 600 秒内做**精确文本去重**，避免重复发送；可用 `dedupe_window_seconds` 调整，最大 24 小时。
+- **参数：** `channel`（必填）、`text`（必填）、`reply_to`（可选）、`dedupe_window_seconds`（可选，默认 `600`）。
+- **安全：** 这是远端写操作，MCP 客户端应要求显式确认。
+
+```json
+{ "channel": "username", "text": "hello", "dedupe_window_seconds": 86400 }
+```
+
+### `join_chat`
+
+- **用途：** 通过私有邀请链接或公开 username 加入 Telegram 群/频道；已加入时幂等返回，不重复改变成员状态。
+- **参数：** `target`（必填）：如 `https://t.me/+...` 或公开 username / `t.me/...` 链接。
+- **安全：** 这是远端写操作，MCP 客户端应要求显式确认。
+
+```json
+{ "target": "https://t.me/+invite_hash" }
 ```
 
 ### `mark_read`

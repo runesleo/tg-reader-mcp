@@ -1,6 +1,6 @@
 # tg-reader-mcp
 
-**What it is:** A read-only Telegram MCP server. Your AI can read channels, groups, DMs, and contact cards through **your** logged-in account. No send, edit, or delete tools—only `mark_read` to clear unread badges.  
+**What it is:** A Telegram MCP server that reuses **your** logged-in account to read channels, groups, DMs, and contact cards, with guarded `send_message` / `join_chat` write actions. Sends use exact-text dedupe by default. Message edit/delete tools are not exposed.  
 **中文文档：** [README.md](./README.md)
 
 ---
@@ -112,6 +112,26 @@ Each name is registered in `list_tools()` and dispatched in `call_tool()`.
 
 ```json
 { "channel": "runesgangalpha", "keyword": "ETF", "limit": 12 }
+```
+
+### `send_message`
+
+- **Purpose:** Send one plain-text message to a DM, group, or channel. Exact-text dedupe is enabled for the most recent 600 seconds by default to prevent accidental duplicates; `dedupe_window_seconds` can be raised up to 24 hours.
+- **Parameters:** `channel` (required), `text` (required), `reply_to` (optional), `dedupe_window_seconds` (optional, default `600`).
+- **Safety:** This is a remote write action; MCP clients should require explicit confirmation.
+
+```json
+{ "channel": "username", "text": "hello", "dedupe_window_seconds": 86400 }
+```
+
+### `join_chat`
+
+- **Purpose:** Join a Telegram group/channel via private invite link or public username. If already joined, the operation returns idempotently without changing membership again.
+- **Parameters:** `target` (required), e.g. `https://t.me/+...` or a public username / `t.me/...` link.
+- **Safety:** This is a remote write action; MCP clients should require explicit confirmation.
+
+```json
+{ "target": "https://t.me/+invite_hash" }
 ```
 
 ### `mark_read`

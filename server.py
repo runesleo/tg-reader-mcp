@@ -2,9 +2,8 @@
 """
 TG Reader MCP Server
 
-Read-only Telegram MCP server. Exposes four tools (list_dialogs, read_channel,
-search_channel, mark_read) to any MCP client. No send, edit, or delete tools
-are registered.
+Telegram MCP server for reading plus guarded write actions. Read/search tools remain
+read-only; send_message and join_chat are explicit remote-write tools with idempotency guards.
 
 Security notes:
 - All network I/O goes to Telegram's official API via Telethon.
@@ -34,13 +33,16 @@ from urllib.parse import urlparse
 # MCP SDK
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, ToolAnnotations, TextContent
 
 # Telethon
 try:
     from telethon import TelegramClient
     from telethon.tl.types import Message
     from telethon.tl.functions.users import GetFullUserRequest
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+    from telethon.errors import UserAlreadyParticipantError
 except ImportError:
     print("Install telethon first: pip install telethon", file=sys.stderr)
     sys.exit(1)
@@ -106,6 +108,13 @@ _PREV_HANDLERS: dict[int, Any] = {}
 
 # Initialize the MCP server.
 server = Server("tg-reader-mcp")
+
+REMOTE_WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
 
 
 def _get_pid_session_path() -> str:
@@ -396,6 +405,49 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="send_message",
+            description="Send one Telegram message to a DM, group, or channel using the existing authenticated session. Exact-text dedupe is enabled by default to prevent accidental double sends.",
+            annotations=REMOTE_WRITE_ANNOTATIONS,
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "DM username, group/channel username, numeric id, or full dialog title.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Plain-text message to send. Telegram formatting is disabled to preserve exact text.",
+                    },
+                    "reply_to": {
+                        "type": "integer",
+                        "description": "Optional message id to reply to.",
+                    },
+                    "dedupe_window_seconds": {
+                        "type": "integer",
+                        "description": "Skip sending if the same outgoing text exists in this dialog within this many seconds. Default 600; set 0 to disable.",
+                        "default": 600,
+                    },
+                },
+                "required": ["channel", "text"],
+            },
+        ),
+        Tool(
+            name="join_chat",
+            description="Join a Telegram group/channel using an invite link or public username, reusing the existing authenticated session. Idempotent when already joined.",
+            annotations=REMOTE_WRITE_ANNOTATIONS,
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Invite URL (https://t.me/+..., t.me/joinchat/...) or public username/link.",
+                    },
+                },
+                "required": ["target"],
+            },
+        ),
+        Tool(
             name="mark_read",
             description="Mark a Telegram dialog (channel, group, or DM) as read.",
             inputSchema={
@@ -480,6 +532,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 channel=arguments["channel"],
                 keyword=arguments["keyword"],
                 limit=arguments.get("limit", 20),
+            )
+        elif name == "send_message":
+            result = await send_message_impl(
+                channel=arguments["channel"],
+                text=arguments["text"],
+                reply_to=arguments.get("reply_to"),
+                dedupe_window_seconds=int(arguments.get("dedupe_window_seconds", 600)),
+            )
+        elif name == "join_chat":
+            result = await join_chat_impl(
+                target=arguments["target"],
             )
         elif name == "mark_read":
             result = await mark_read_impl(
@@ -742,6 +805,105 @@ async def search_channel_impl(channel: str, keyword: str, limit: int = 20) -> di
             "count": len(messages),
         }
 
+    finally:
+        await client.disconnect()
+
+
+async def _resolve_dialog_entity(client, channel: str):
+    """Resolve username/id/link first; fall back to exact dialog title."""
+    try:
+        return await client.get_entity(channel)
+    except Exception as first_error:
+        wanted = str(channel).strip().lstrip('@').casefold()
+        async for dialog in client.iter_dialogs():
+            username = (getattr(dialog.entity, 'username', None) or '').casefold()
+            title = (dialog.name or '').strip().casefold()
+            if wanted and wanted in {username, title}:
+                return dialog.entity
+        raise first_error
+
+
+async def send_message_impl(
+    channel: str,
+    text: str,
+    reply_to: int | None = None,
+    dedupe_window_seconds: int = 600,
+) -> dict:
+    """Send exact plain text with a recent exact-text dedupe guard."""
+    text = str(text or '')
+    if not text.strip():
+        raise ValueError('text must be non-empty')
+    if len(text) > 4096:
+        raise ValueError('text exceeds Telegram 4096-character message limit')
+    dedupe_window_seconds = max(0, min(int(dedupe_window_seconds), 86400))
+    client = await get_client()
+    try:
+        entity = await _resolve_dialog_entity(client, channel)
+        name = (getattr(entity, 'title', None) or getattr(entity, 'first_name', None)
+                or getattr(entity, 'username', None) or str(channel))
+        if dedupe_window_seconds:
+            cutoff = datetime.now(timezone.utc).timestamp() - dedupe_window_seconds
+            async for msg in client.iter_messages(entity, limit=50):
+                if msg.date and msg.date.timestamp() < cutoff:
+                    break
+                if getattr(msg, 'out', False) and (msg.raw_text or '') == text:
+                    return {
+                        'success': True, 'deduped': True, 'channel': name,
+                        'message_id': msg.id,
+                        'date': msg.date.isoformat() if msg.date else None,
+                        'text': text,
+                    }
+        sent = await client.send_message(
+            entity, text, reply_to=reply_to, parse_mode=None, link_preview=False,
+        )
+        return {
+            'success': True, 'deduped': False, 'channel': name,
+            'message_id': sent.id,
+            'date': sent.date.isoformat() if sent.date else None,
+            'text': sent.raw_text or text,
+        }
+    finally:
+        await client.disconnect()
+
+
+def _telegram_invite_hash(target: str) -> str | None:
+    target = str(target or '').strip()
+    m = re.search(r'(?:https?://)?t\.me/(?:joinchat/|\+)([A-Za-z0-9_-]+)', target)
+    return m.group(1) if m else None
+
+
+async def join_chat_impl(target: str) -> dict:
+    """Join private invite or public channel/group, idempotently."""
+    target = str(target or '').strip()
+    if not target:
+        raise ValueError('target must be non-empty')
+    client = await get_client()
+    try:
+        invite_hash = _telegram_invite_hash(target)
+        if invite_hash:
+            try:
+                updates = await client(ImportChatInviteRequest(invite_hash))
+            except UserAlreadyParticipantError:
+                return {'success': True, 'already_joined': True, 'target': target}
+            chats = getattr(updates, 'chats', None) or []
+            chat = chats[0] if chats else None
+            return {
+                'success': True, 'already_joined': False, 'target': target,
+                'chat_id': getattr(chat, 'id', None), 'title': getattr(chat, 'title', None),
+            }
+        public_target = re.sub(r'^(?:https?://)?t\.me/', '', target).strip('/').lstrip('@')
+        entity = await client.get_entity(public_target)
+        try:
+            await client(JoinChannelRequest(entity))
+        except UserAlreadyParticipantError:
+            return {
+                'success': True, 'already_joined': True, 'target': target,
+                'chat_id': getattr(entity, 'id', None), 'title': getattr(entity, 'title', None),
+            }
+        return {
+            'success': True, 'already_joined': False, 'target': target,
+            'chat_id': getattr(entity, 'id', None), 'title': getattr(entity, 'title', None),
+        }
     finally:
         await client.disconnect()
 
