@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One-time Telegram user login and MCP config helper."""
 
+import asyncio
 import json
 import os
 import shlex
@@ -35,7 +36,7 @@ def _tighten_session_permissions(session_file: Path) -> None:
             pass
 
 
-def main() -> int:
+async def _run() -> int:
     session_file = _session_file()
     custom_session = bool(os.getenv("TG_SESSION_PATH"))
 
@@ -69,15 +70,15 @@ def main() -> int:
         print(f"Telegram session: {session_file}")
         print("Log in once below. Telegram may ask for your phone, login code, and 2FA password.\n")
 
-        client.start()
-        if not client.is_user_authorized():
+        await client.start()
+        if not await client.is_user_authorized():
             raise RuntimeError("Telegram session is not authorized")
-        me = client.get_me()
-        client.get_dialogs(limit=1)  # read-only smoke test
+        me = await client.get_me()
+        await client.get_dialogs(limit=1)  # read-only smoke test
     finally:
         if client is not None:
             try:
-                client.disconnect()
+                await client.disconnect()
             except Exception:
                 pass
         os.umask(old_umask)
@@ -105,6 +106,10 @@ def main() -> int:
     print("\nClaude Code — run:")
     print(shlex.join(parts))
     return 0
+
+
+def main() -> int:
+    return asyncio.run(_run())
 
 
 if __name__ == "__main__":
