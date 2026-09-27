@@ -39,8 +39,8 @@ def _session_file() -> Path:
 
 def _prompt_phone() -> str:
     value = input("Please enter your phone in international format (for example +15551234567): ").strip()
-    value = re.sub(r"[\\s()-]", "", value)
-    if not re.fullmatch(r"\\+\\d{7,15}", value):
+    value = re.sub(r"[\s()-]", "", value)
+    if not re.fullmatch(r"\+\d{7,15}", value):
         raise RuntimeError("Expected a phone number in international format; bot tokens are not supported")
     return value
 
