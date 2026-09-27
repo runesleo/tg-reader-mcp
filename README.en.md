@@ -16,51 +16,38 @@ uv venv && source .venv/bin/activate
 uv pip install -e .
 ```
 
-### 2. Create a Telethon session
-
-You need a local `.session` file from a one-time user login (not a bot token):
-
-```python
-# login.py — run once anywhere convenient
-from telethon import TelegramClient
-client = TelegramClient('tg_session', 94575, 'a3406de8d171bb422bb6ddf3bbd800e2')
-client.start()
-print("OK: tg_session.session")
-```
+### 2. One-time login + self-check
 
 ```bash
-python login.py
+tg-reader-init
 ```
 
-The default `API_ID` / `API_HASH` match Telegram Desktop’s public pair. For your own app credentials, use [my.telegram.org](https://my.telegram.org) and set `TG_API_ID` / `TG_API_HASH`.
+On first run it will:
 
-### 3. Claude Desktop (`claude_desktop_config.json`)
+- Log in with your Telegram **user account** (not a bot token); enter your phone, login code, and 2FA password when prompted.
+- Create or reuse `~/.tg-reader-mcp/tg_session.session` and tighten local file permissions.
+- Run one read-only dialog fetch as a smoke test so you know the session works.
+- Print ready-to-copy Claude Desktop JSON plus a ready-to-run Claude Code command; session and executable paths are already absolute.
 
-Merge the **`tg-reader` entry below** into the existing `mcpServers` object (macOS example path: `~/Library/Application Support/Claude/claude_desktop_config.json`). Swap in your absolute paths.
-
-```json
-{
-  "mcpServers": {
-    "tg-reader": {
-      "command": "/ABSOLUTE/PATH/TO/tg-reader-mcp/.venv/bin/python",
-      "args": ["/ABSOLUTE/PATH/TO/tg-reader-mcp/server.py"],
-      "env": {
-        "TG_SESSION_PATH": "/ABSOLUTE/PATH/TO/tg_session.session"
-      }
-    }
-  }
-}
-```
-
-Optional env: `TG_API_ID`, `TG_API_HASH`. If direct Telegram connectivity fails, set `TG_PROXY_URL`; `http://`, `socks5://`, and `socks4://` are supported (for example `http://127.0.0.1:7897` for a local proxy).
-
-### 4. Claude Code (CLI)
+The default `API_ID` / `API_HASH` match Telegram Desktop’s public pair. To use your own app credentials, create them at [my.telegram.org](https://my.telegram.org), then run:
 
 ```bash
-claude mcp add tg-reader -s user \
-  -e TG_SESSION_PATH=/absolute/path/to/tg_session.session \
-  -- /absolute/path/to/tg-reader-mcp/.venv/bin/python /absolute/path/to/tg-reader-mcp/server.py
+TG_API_ID=your_id TG_API_HASH=your_hash tg-reader-init
 ```
+
+If direct Telegram connectivity fails, set `TG_PROXY_URL` (`http://`, `socks5://`, and `socks4://` are supported):
+
+```bash
+TG_PROXY_URL=http://127.0.0.1:7897 tg-reader-init
+```
+
+Any explicit `TG_API_ID`, `TG_API_HASH`, or `TG_PROXY_URL` used during initialization is copied into the generated MCP config so login and runtime stay consistent.
+
+### 3. Connect your MCP client
+
+- **Claude Desktop:** merge the `tg-reader` entry printed by `tg-reader-init` into your existing `mcpServers` object, then restart Claude Desktop.
+- **Claude Code:** run the exact `claude mcp add ...` command printed by `tg-reader-init`.
+
 
 ---
 

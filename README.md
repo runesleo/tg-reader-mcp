@@ -16,51 +16,38 @@ uv venv && source .venv/bin/activate
 uv pip install -e .
 ```
 
-### 2. 准备 Telethon session
-
-需要本机有一份已授权的 `.session`（userbot 登录，非 Bot Token）。最小示例：
-
-```python
-# login.py（在任意目录运行一次即可）
-from telethon import TelegramClient
-client = TelegramClient('tg_session', 94575, 'a3406de8d171bb422bb6ddf3bbd800e2')
-client.start()
-print("OK: tg_session.session")
-```
+### 2. 一次性登录 + 自检
 
 ```bash
-python login.py
+tg-reader-init
 ```
 
-默认 `API_ID` / `API_HASH` 与 Telegram Desktop 公开凭据一致。若要自建应用，在 [my.telegram.org](https://my.telegram.org) 申请并设置环境变量 `TG_API_ID`、`TG_API_HASH`。
+首次运行会自动：
 
-### 3. Claude Desktop（`claude_desktop_config.json`）
+- 使用 Telegram **个人账号**登录（非 Bot Token）；按提示输入手机号、验证码，若开启 2FA 再输入密码。
+- 创建或复用 `~/.tg-reader-mcp/tg_session.session`，并收紧本地文件权限。
+- 做一次只读 dialog 拉取自检，确认 session 可用。
+- 输出 Claude Desktop 可直接复制的 JSON 和 Claude Code 可直接执行的命令；session 与可执行文件路径都已展开，无需手填绝对路径。
 
-将下面 **`mcpServers` 里的键值对** 合并进你现有配置文件的 `mcpServers` 对象中（路径示例：macOS `~/Library/Application Support/Claude/claude_desktop_config.json`）。把占位路径换成你的绝对路径。
-
-```json
-{
-  "mcpServers": {
-    "tg-reader": {
-      "command": "/ABSOLUTE/PATH/TO/tg-reader-mcp/.venv/bin/python",
-      "args": ["/ABSOLUTE/PATH/TO/tg-reader-mcp/server.py"],
-      "env": {
-        "TG_SESSION_PATH": "/ABSOLUTE/PATH/TO/tg_session.session"
-      }
-    }
-  }
-}
-```
-
-可选环境变量：`TG_API_ID`、`TG_API_HASH`（覆盖默认 Telegram Desktop 凭据）。如果直连 Telegram 失败，可设置 `TG_PROXY_URL`；支持 `http://`、`socks5://`、`socks4://`，例如本机代理可写 `http://127.0.0.1:7897`。
-
-### 4. Claude Code（CLI）
+默认 `API_ID` / `API_HASH` 与 Telegram Desktop 公开凭据一致。若要使用自己的应用凭据，可先在 [my.telegram.org](https://my.telegram.org) 申请，然后运行：
 
 ```bash
-claude mcp add tg-reader -s user \
-  -e TG_SESSION_PATH=/absolute/path/to/tg_session.session \
-  -- /absolute/path/to/tg-reader-mcp/.venv/bin/python /absolute/path/to/tg-reader-mcp/server.py
+TG_API_ID=your_id TG_API_HASH=your_hash tg-reader-init
 ```
+
+如果直连 Telegram 失败，可用 `TG_PROXY_URL`（支持 `http://`、`socks5://`、`socks4://`）：
+
+```bash
+TG_PROXY_URL=http://127.0.0.1:7897 tg-reader-init
+```
+
+初始化时显式设置的 `TG_API_ID`、`TG_API_HASH`、`TG_PROXY_URL` 会自动带进生成的 MCP 配置，避免首次登录与后续运行使用不同参数。
+
+### 3. 接入 MCP 客户端
+
+- **Claude Desktop：** 将 `tg-reader-init` 输出的 `tg-reader` 条目合并到现有 `mcpServers` 对象，然后重启 Claude Desktop。
+- **Claude Code：** 直接运行 `tg-reader-init` 输出的 `claude mcp add ...` 命令。
+
 
 ---
 
