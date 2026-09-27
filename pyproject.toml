@@ -32,13 +32,14 @@ Author = "https://x.com/runes_leo"
 
 [project.scripts]
 tg-reader-mcp = "server:cli"
+tg-reader-init = "tg_reader_init:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["server.py"]
+only-include = ["server.py", "tg_reader_init.py"]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["server.py", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE"]
+only-include = ["server.py", "tg_reader_init.py", "README.md", "README.en.md", "CHANGELOG.md", "LICENSE"]
