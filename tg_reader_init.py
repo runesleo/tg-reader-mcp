@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -15,15 +16,33 @@ APP_DIR = Path.home() / ".tg-reader-mcp"
 DEFAULT_SESSION_FILE = APP_DIR / "tg_session.session"
 
 
+def _assert_no_symlink_components(path: Path) -> None:
+    """Refuse session paths that traverse symlinks."""
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise RuntimeError(f"Session path must not traverse symlinks: {current}")
+
+
 def _session_file() -> Path:
     raw = os.getenv("TG_SESSION_PATH")
     path = Path(raw).expanduser() if raw else DEFAULT_SESSION_FILE
-    if path.is_symlink():
-        raise RuntimeError("TG_SESSION_PATH must not be a symlink")
     path = path if path.suffix == ".session" else path.with_suffix(".session")
-    if path.exists() and path.is_symlink():
-        raise RuntimeError("The .session file must not be a symlink")
-    return path.resolve()
+    path = Path(os.path.abspath(path))
+    _assert_no_symlink_components(path)
+    if path.exists() and not path.is_file():
+        raise RuntimeError("TG_SESSION_PATH must point to a regular .session file")
+    return path
+
+
+def _prompt_phone() -> str:
+    value = input("Please enter your phone in international format (for example +15551234567): ").strip()
+    value = re.sub(r"[\\s()-]", "", value)
+    if not re.fullmatch(r"\\+\\d{7,15}", value):
+        raise RuntimeError("Expected a phone number in international format; bot tokens are not supported")
+    return value
 
 
 def _tighten_session_permissions(session_file: Path) -> None:
@@ -70,10 +89,12 @@ async def _run() -> int:
         print(f"Telegram session: {session_file}")
         print("Log in once below. Telegram may ask for your phone, login code, and 2FA password.\n")
 
-        await client.start()
+        await client.start(phone=_prompt_phone)
         if not await client.is_user_authorized():
             raise RuntimeError("Telegram session is not authorized")
         me = await client.get_me()
+        if getattr(me, "bot", False):
+            raise RuntimeError("Bot sessions are not supported; use a Telegram user account")
         await client.get_dialogs(limit=1)  # read-only smoke test
     finally:
         if client is not None:
