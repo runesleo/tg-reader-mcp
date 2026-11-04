@@ -169,6 +169,7 @@ TG_PROXY_URL=http://127.0.0.1:7897 tg-reader-init
 3. **单频道检索：** Alpha 群里搜关键词，用 `search_channel` 定位历史讨论。
 4. **私域 CRM：** 把标签写在联系人备注里，用 `list_contacts_matching` 批量拉出对应人群。
 5. **核对对方资料：** 用 `get_contact` 拉 bio、共同群数量等辅助判断账号背景。
+6. **收藏夹当 AI 收件箱：** 各平台的链接、截图、语音都分享到 Telegram「收藏夹」（Saved Messages），让 AI 定期用 `read_channel(channel="me", since=上次时间)` 读新增内容，读原文、整理归档；图片和文件用 `download_media(channel="me", message_id=…)` 取。
 
 ---
 

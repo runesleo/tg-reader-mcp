@@ -160,6 +160,7 @@ Each name is registered in `list_tools()` and dispatched in `call_tool()`.
 3. **Deep search in one alpha channel:** `search_channel` instead of scrolling by hand.
 4. **Tags in contact notes:** Bulk-fetch contacts whose names or notes contain a tag string.
 5. **Quick identity check:** `get_contact` for bio and rough social graph hints (`common_groups_count`).
+6. **Saved Messages as an AI inbox:** Share links, screenshots and voice notes from any app to Telegram Saved Messages, then have your AI periodically call `read_channel(channel="me", since=<last run>)`, read the originals and file them; fetch images/files with `download_media(channel="me", message_id=…)`.
 
 ---
 
