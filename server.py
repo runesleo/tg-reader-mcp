@@ -449,7 +449,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="mark_read",
-            description="Mark a Telegram dialog (channel, group, or DM) as read.",
+            description="Mark a Telegram dialog (channel, group, or DM) as read, including its unread @mention badge.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -619,6 +619,7 @@ async def list_dialogs_impl(filter_keyword: str | None = None, limit: int = 50) 
                 "name": dialog.name,
                 "username": username,
                 "unread_count": dialog.unread_count or 0,
+                "unread_mentions_count": getattr(dialog.dialog, 'unread_mentions_count', 0) or 0,
             })
             count += 1
 
@@ -919,7 +920,7 @@ async def mark_read_impl(channel: str) -> dict:
         except Exception as e:
             return {"error": f"Unable to resolve dialog {channel}: {e}"}
 
-        await client.send_read_acknowledge(entity)
+        await client.send_read_acknowledge(entity, clear_mentions=True)
         return {"success": True, "channel": name, "message": f"Marked {name} as read"}
 
     finally:
